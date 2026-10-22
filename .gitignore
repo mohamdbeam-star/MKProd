@@ -1,0 +1,17 @@
+# Build output
+.build/
+*.app/
+web/node_modules/
+web/dist/
+web/.wrangler/
+
+# Local secrets and data (never commit)
+.dev.vars
+*.env
+.env*
+*.sql
+*.pem
+*.key
+
+# macOS
+.DS_Store

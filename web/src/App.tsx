@@ -1,0 +1,426 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ID, defaultFinanceSettings, newList, newSpace, uid, PALETTE } from './model';
+import { ApiError, Session, SessionUser, SyncEngine, WorkspaceInfo, api, idbClear, idbGet, idbSet } from './sync';
+import { Bytes, newKeyPair, newRecoveryCode, passwordKeys, recoveryKeys, sealScalar, unlockKeyPair, open as openSealed } from './crypto';
+import { Finance } from './finance';
+import { AppCtx, Avatars, Modal, useApp } from './ui';
+import { HomePage, InboxPage, TaskDrawer, TasksPage } from './pages/Tasks';
+import { ChatPage, DocsPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
+import {
+  AlertsPage, AnalyticsPage, AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceOverview, FinanceSettingsPage,
+  OrdersPage, ReportsPage, SavingsPage,
+} from './pages/Finance';
+
+const USER_KEY = 'mkprod.user';
+const WS_KEY = 'mkprod.workspace';
+const SEED_KEY = 'mkprod.seed:';
+
+/** Restores a session: profile from localStorage, non-extractable private key from IndexedDB, cookie for the API. */
+async function restoreSession(): Promise<Session | null> {
+  try {
+    const user = JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as SessionUser | null;
+    if (!user) return null;
+    const privateKey = await idbGet<CryptoKey>('pk:' + user.id);
+    return privateKey ? { user, privateKey } : null;
+  } catch { return null; }
+}
+
+export default function App() {
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  useEffect(() => { restoreSession().then(setSession); }, []);
+
+  const signOut = useCallback(async () => {
+    await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(WS_KEY);
+    await idbClear();
+    setSession(null);
+    setWorkspace(null);
+  }, []);
+
+  if (session === undefined) return null;
+  if (!session) return <AuthScreen onSession={setSession} />;
+  if (!workspace) return <WorkspacePicker session={session} onPick={(w) => { localStorage.setItem(WS_KEY, w.id); setWorkspace(w); }} onSignOut={signOut} />;
+  return <Workspace key={workspace.id} session={session} workspace={workspace} onSwitch={() => { localStorage.removeItem(WS_KEY); setWorkspace(null); }} onSignOut={signOut} />;
+}
+
+// ---------------------------------------------------------------- auth
+
+/** After the server accepts us: unlock (or create) the key pair, make sure a recovery code exists. */
+async function finishAuth(user: SessionUser, kek: CryptoKey, email: string): Promise<{ session: Session; recoveryCode?: string }> {
+  let pair, scalar: Bytes;
+  if (user.publicKey && user.encPrivateKey) {
+    ({ pair, scalar } = await unlockKeyPair(kek, user.encPrivateKey, user.publicKey));
+  } else {
+    const k = await newKeyPair(kek);
+    await api('/api/me/keys', { method: 'PUT', body: { publicKey: k.publicKey, encPrivateKey: k.encPrivateKey } });
+    user = { ...user, publicKey: k.publicKey, encPrivateKey: k.encPrivateKey };
+    pair = k.pair;
+    scalar = k.scalar;
+  }
+  let recoveryCode: string | undefined;
+  const me = await api<{ user: { hasRecovery: boolean } }>('/api/me');
+  if (!me.user.hasRecovery) {
+    recoveryCode = newRecoveryCode();
+    const rk = await recoveryKeys(email, recoveryCode);
+    await api('/api/me/recovery', { method: 'PUT', body: { recAuth: rk.authKey, encPrivateKeyRec: await sealScalar(rk.kek, scalar) } });
+  }
+  scalar.fill(0);
+  await idbSet('pk:' + user.id, pair.privateKey);
+  localStorage.setItem(USER_KEY, JSON.stringify({ id: user.id, email: user.email, name: user.name, color: user.color, publicKey: user.publicKey }));
+  return { session: { user, privateKey: pair.privateKey }, recoveryCode };
+}
+
+function AuthScreen({ onSession }: { onSession: (s: Session) => void }) {
+  const [mode, setMode] = useState<'in' | 'up' | 'recover'>('in');
+  const [form, setForm] = useState({ name: '', email: '', password: '', code: '' });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const [pending, setPending] = useState<{ session: Session; code: string } | null>(null);
+  const done = (r: { session: Session; recoveryCode?: string }) => (r.recoveryCode ? setPending({ session: r.session, code: r.recoveryCode }) : onSession(r.session));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    const email = form.email.trim().toLowerCase();
+    try {
+      if (mode !== 'in' && form.password.length < 10) throw new Error('Use at least 10 characters for your password.');
+      setBusy('Securing your password…');
+      if (mode === 'recover') {
+        const rk = await recoveryKeys(email, form.code);
+        const r = await api<{ token: string; encPrivateKeyRec: string }>('/api/auth/recover', { body: { email, recAuth: rk.authKey } });
+        const scalar = await openSealed(rk.kek, r.encPrivateKeyRec, 'mkprod-v1:privkey');
+        const pk = await passwordKeys(email, form.password);
+        const res = await api<{ user: SessionUser }>('/api/auth/recover/finish', { bearer: r.token, body: { newAuthKey: pk.authKey, encPrivateKey: await sealScalar(pk.kek, scalar) } });
+        scalar.fill(0);
+        done(await finishAuth(res.user, pk.kek, email));
+        return;
+      }
+      const pk = await passwordKeys(email, form.password);
+      let res: { user: SessionUser };
+      if (mode === 'up') {
+        const k = await newKeyPair(pk.kek);
+        res = await api('/api/auth/signup', { body: { email, name: form.name, authKey: pk.authKey, publicKey: k.publicKey, encPrivateKey: k.encPrivateKey } });
+      } else {
+        try {
+          res = await api('/api/auth/login', { body: { email, authKey: pk.authKey } });
+        } catch (err) {
+          // Accounts from before client-side encryption: prove the password once, then upgrade.
+          if (!(err instanceof ApiError && err.body.legacy)) throw err;
+          res = await api('/api/auth/login', { body: { email, authKey: pk.authKey, password: form.password } });
+        }
+      }
+      done(await finishAuth(res.user, pk.kek, email));
+    } catch (err) {
+      setError((err as Error).name === 'OperationError' ? 'Could not unlock your encryption keys with this password.' : (err as Error).message);
+    } finally { setBusy(''); }
+  };
+
+  if (pending) return <RecoveryCodeScreen code={pending.code} onDone={() => onSession(pending.session)} />;
+  return (
+    <div className="auth">
+      <form className="card col" onSubmit={submit}>
+        <div className="row"><div className="logo">MK</div><div><h2>MK Prod</h2><div className="small muted">🔒 End-to-end encrypted workspace</div></div></div>
+        <div className="seg" style={{ alignSelf: 'flex-start' }}>
+          <button type="button" className={mode === 'in' ? 'on' : ''} onClick={() => setMode('in')}>Sign in</button>
+          <button type="button" className={mode === 'up' ? 'on' : ''} onClick={() => setMode('up')}>Create account</button>
+        </div>
+        {mode === 'recover' && <p className="small">Enter your email, the recovery code you saved, and a new password.</p>}
+        {mode === 'up' && <label className="field">Your name<input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoComplete="name" /></label>}
+        <label className="field">Email<input className="input" type="email" required value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} autoComplete="username" /></label>
+        {mode === 'recover' && <label className="field">Recovery code<input className="input" required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} placeholder="XXXX-XXXX-…" autoComplete="off" spellCheck={false} /></label>}
+        <label className="field">{mode === 'recover' ? 'New password' : 'Password'}<input className="input" type="password" required minLength={mode === 'in' ? 8 : 10} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete={mode === 'in' ? 'current-password' : 'new-password'} /></label>
+        {error && <div className="red small">{error}</div>}
+        <button className="btn primary" disabled={!!busy}>{busy || (mode === 'in' ? 'Sign in' : mode === 'up' ? 'Create account' : 'Reset password')}</button>
+        {mode === 'in' && <button type="button" className="btn ghost sm" onClick={() => setMode('recover')}>Forgot password? Use your recovery code</button>}
+        {mode === 'recover' && <button type="button" className="btn ghost sm" onClick={() => setMode('in')}>Back to sign in</button>}
+        <p className="small muted">Your password never leaves this device; it's stretched here and used to unlock your encryption keys. No recovery code? A workspace admin can reset your password.</p>
+      </form>
+    </div>
+  );
+}
+
+function RecoveryCodeScreen({ code, onDone }: { code: string; onDone: () => void }) {
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="auth">
+      <div className="card col">
+        <h2>🔑 Save your recovery code</h2>
+        <p className="small">Your data is end-to-end encrypted. If you forget your password, this code is the only way to get back in without losing access. Store it in a password manager or print it. It is shown <strong>only once</strong>.</p>
+        <div className="mono" style={{ fontSize: 18, fontWeight: 700, padding: 12, borderRadius: 8, background: 'var(--hover)', textAlign: 'center', userSelect: 'all', wordBreak: 'break-all' }}>{code}</div>
+        <div className="row">
+          <button className="btn" onClick={() => navigator.clipboard?.writeText(code)}>Copy</button>
+          <button className="btn" onClick={() => window.print()}>Print</button>
+        </div>
+        <label className="row small"><input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} /> I saved my recovery code somewhere safe</label>
+        <button className="btn primary" disabled={!saved} onClick={onDone}>Continue</button>
+      </div>
+    </div>
+  );
+}
+
+function WorkspacePicker({ session, onPick, onSignOut }: { session: Session; onPick: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
+  const [list, setList] = useState<WorkspaceInfo[] | null>(null);
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    api<{ workspaces: WorkspaceInfo[] }>('/api/me').then((r) => {
+      setList(r.workspaces);
+      const last = localStorage.getItem(WS_KEY);
+      const w = r.workspaces.find((x) => x.id === last) ?? (r.workspaces.length === 1 ? r.workspaces[0] : undefined);
+      if (w) onPick(w);
+    }).catch((e) => { if (e instanceof ApiError && e.status === 401) onSignOut(); else setError(e.message); });
+  }, []);
+  const create = async () => {
+    try {
+      const { id } = await api<{ id: ID }>('/api/workspaces', { body: { name: name || 'My workspace' } });
+      // Starter content is created locally, so its first upload is already encrypted.
+      const space = newSpace('Team', PALETTE[0]);
+      const list = newList(space.id, 'Tasks');
+      sessionStorage.setItem(SEED_KEY + id, JSON.stringify([
+        ['spaces', space], ['lists', list], ['channels', { id: uid(), name: 'general' }], ['financeSettings', defaultFinanceSettings()],
+      ]));
+      onPick({ id, name: name || 'My workspace', role: 'owner' });
+    } catch (e) { setError((e as Error).message); }
+  };
+  const join = async () => {
+    try {
+      const r = await api<{ workspace: WorkspaceInfo }>('/api/invites/accept', { body: { code } });
+      onPick(r.workspace);
+    } catch (e) { setError((e as Error).message); }
+  };
+  return (
+    <div className="auth">
+      <div className="card col">
+        <div className="row"><div className="logo">MK</div><h2 className="grow">Choose a workspace</h2><button className="btn ghost sm" onClick={onSignOut}>Sign out</button></div>
+        <div className="small muted">Signed in as {session.user.email}</div>
+        {list === null && !error && <p className="muted">Loading…</p>}
+        {list?.map((w) => <button key={w.id} className="btn" style={{ justifyContent: 'space-between' }} onClick={() => onPick(w)}><span>{w.name}</span><span className="small muted">{w.role}</span></button>)}
+        {list?.length === 0 && <p className="small muted">No workspaces yet. Create one, or enter the invite code an admin gave you.</p>}
+        <div className="row"><input className="input grow" placeholder="Invite code (XXXX-XXXX-XXXX)" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" /><button className="btn" disabled={code.replace(/\W/g, '').length < 12} onClick={join}>Join</button></div>
+        <div className="row"><input className="input grow" placeholder="New workspace name" value={name} onChange={(e) => setName(e.target.value)} /><button className="btn primary" onClick={create}>Create</button></div>
+        {error && <div className="red small">{error}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- workspace shell
+
+function parseHash() {
+  const h = location.hash.replace(/^#\/?/, '');
+  const [path, query] = h.split('?');
+  const task = new URLSearchParams(query ?? '').get('task') ?? undefined;
+  return { route: path || 'home', task };
+}
+
+function Workspace({ session, workspace, onSwitch, onSignOut }: { session: Session; workspace: WorkspaceInfo; onSwitch: () => void; onSignOut: () => void }) {
+  const engine = useMemo(() => new SyncEngine(session, workspace, onSignOut), [session, workspace]);
+  const fin = useMemo(() => new Finance(engine), [engine]);
+  const [{ route, task }, setLoc] = useState(parseHash);
+  const [toastMsg, setToast] = useState('');
+  useEffect(() => {
+    engine.approvalCheck = (o, m) => fin.canApprove(o, m);
+    const seed = sessionStorage.getItem(SEED_KEY + workspace.id);
+    if (seed) {
+      sessionStorage.removeItem(SEED_KEY + workspace.id);
+      for (const [kind, obj] of JSON.parse(seed)) engine.put(kind, obj);
+    }
+    engine.start();
+    const onHash = () => setLoc(parseHash());
+    window.addEventListener('hashchange', onHash);
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+    return () => { engine.stop(); window.removeEventListener('hashchange', onHash); };
+  }, [engine]);
+  useEffect(() => { engine.viewing = task ? `task:${task}` : route; }, [route, task]);
+  const go = useCallback((r: string) => { location.hash = '/' + r; }, []);
+  const openTask = useCallback((id?: ID) => { location.hash = '/' + parseHash().route + (id ? `?task=${id}` : ''); }, []);
+  const toast = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(''), 3000); }, []);
+  const ctx = { engine, fin, go, route, openTask, toast };
+  return (
+    <AppCtx.Provider value={ctx}>
+      <Shell onSwitch={onSwitch} onSignOut={onSignOut}>
+        <Page route={route} />
+      </Shell>
+      {task && <TaskDrawer id={task} onClose={() => openTask()} />}
+      {toastMsg && <div className="toast">{toastMsg}</div>}
+    </AppCtx.Provider>
+  );
+}
+
+function Page({ route }: { route: string }) {
+  const [p, id] = route.split('/');
+  switch (p) {
+    case 'home': return <HomePage />;
+    case 'inbox': return <InboxPage />;
+    case 'mine': return <TasksPage scope={{ kind: 'mine' }} />;
+    case 'everything': return <TasksPage scope={{ kind: 'everything' }} />;
+    case 'space': case 'folder': case 'list': return <TasksPage key={route} scope={{ kind: p, id }} />;
+    case 'docs': return <DocsPage id={id} />;
+    case 'chat': return <ChatPage id={id} />;
+    case 'goals': return <GoalsPage />;
+    case 'time': return <TimesheetPage />;
+    case 'trash': return <TrashPage />;
+    case 'team': return <TeamPage />;
+    case 'finance': return <FinanceOverview />;
+    case 'alerts': return <AlertsPage />;
+    case 'budgets': return <BudgetsPage />;
+    case 'orders': return <OrdersPage openId={id} />;
+    case 'approvals': return <OrdersPage approvalsOnly openId={id} />;
+    case 'catalog': return <CatalogPage />;
+    case 'contracts': return <ContractsPage />;
+    case 'savings': return <SavingsPage />;
+    case 'analytics': return <AnalyticsPage />;
+    case 'reports': return <ReportsPage />;
+    case 'audit': return <AuditPage />;
+    case 'fsettings': return <FinanceSettingsPage />;
+    default: return <HomePage />;
+  }
+}
+
+function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; onSwitch: () => void; onSignOut: () => void }) {
+  const { engine, fin, go, route, openTask } = useApp();
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState(false);
+  const [expanded, setExpanded] = useState<Set<ID>>(new Set());
+  const nav = (r: string, icon: string, label: string, badge?: number) => (
+    <div className={`nav ${route === r || route.startsWith(r + '/') ? 'on' : ''}`} onClick={() => { go(r); setOpen(false); }}>
+      <span className="ic">{icon}</span><span className="ellipsis">{label}</span>{badge ? <span className="badge">{badge}</span> : null}
+    </div>
+  );
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearch(true); } };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, []);
+  const unread = engine.inbox.filter((n) => !n.read).length;
+  const approvals = engine.list('orders').filter((o) => fin.canApprove(o)).length;
+  const alerts = fin.alerts().filter((a) => a.severity > 0).length;
+  const others = engine.presence.filter((p) => p.user_id !== engine.me).map((p) => p.user_id);
+  const st = engine.status;
+  const addSpace = () => {
+    const n = prompt('Space name');
+    if (!n) return;
+    const s = newSpace(n, PALETTE[engine.list('spaces').length % PALETTE.length]);
+    engine.put('spaces', s);
+    const l = newList(s.id, 'List');
+    engine.put('lists', l);
+    go('list/' + l.id);
+  };
+  const addList = (spaceId: ID) => {
+    const n = prompt('List name');
+    if (n) { const l = newList(spaceId, n); engine.put('lists', l); go('list/' + l.id); }
+  };
+  return (
+    <div className="app">
+      <aside className={`side ${open ? 'open' : ''}`}>
+        <div className="side-scroll">
+          <div className="row" style={{ padding: '4px 8px 8px' }}><div className="logo" style={{ width: 28, height: 28, fontSize: 12, borderRadius: 8 }}>MK</div>
+            <div className="grow ellipsis"><strong>{engine.workspace.name}</strong></div></div>
+          <div className="nav" onClick={() => setSearch(true)}><span className="ic">🔍</span>Search<span className="small faint right">⌘K</span></div>
+          {nav('home', '🏠', 'Home')}
+          {nav('inbox', '📥', 'Inbox', unread)}
+          {nav('mine', '👤', 'My Tasks')}
+          {nav('everything', '🗂', 'Everything')}
+          <h4>Spaces <button className="btn ghost sm right" onClick={addSpace} title="New space">＋</button></h4>
+          {engine.list('spaces').map((s) => (
+            <div key={s.id}>
+              <div className={`nav ${route === 'space/' + s.id ? 'on' : ''}`}>
+                <span className="ic" onClick={() => setExpanded((x) => { const n = new Set(x); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}>{expanded.has(s.id) ? '▾' : '▸'}</span>
+                <span style={{ width: 14, height: 14, borderRadius: 4, background: s.colorHex }} />
+                <span className="grow ellipsis" onClick={() => go('space/' + s.id)}>{s.name}</span>
+                <button className="btn ghost sm" title="New list" onClick={() => addList(s.id)}>＋</button>
+              </div>
+              {expanded.has(s.id) && (
+                <div style={{ paddingLeft: 18 }}>
+                  {engine.list('folders').filter((f) => f.spaceId === s.id).map((f) => (
+                    <div key={f.id}>
+                      {nav('folder/' + f.id, '📁', f.name)}
+                      <div style={{ paddingLeft: 14 }}>{engine.list('lists').filter((l) => l.folderId === f.id && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, l.sprintStart ? '🏁' : '☰', l.name)}</div>)}</div>
+                    </div>
+                  ))}
+                  {engine.list('lists').filter((l) => l.spaceId === s.id && !l.folderId && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, '☰', l.name)}</div>)}
+                </div>
+              )}
+            </div>
+          ))}
+          <h4>Workspace</h4>
+          {nav('docs', '📝', 'Docs')}
+          {nav('chat', '💬', 'Chat')}
+          {nav('goals', '🎯', 'Goals')}
+          {nav('time', '⏱', 'Timesheets')}
+          {nav('trash', '🗑', 'Trash')}
+          <h4>Budget & procurement</h4>
+          {nav('finance', '📊', 'Overview')}
+          {nav('alerts', '🔔', 'Alerts', alerts)}
+          {nav('budgets', '💰', 'Budgets')}
+          {nav('orders', '📦', 'Orders & expenses')}
+          {nav('approvals', '✅', 'My approvals', approvals)}
+          {nav('catalog', '🛒', 'Shopping catalog')}
+          {nav('contracts', '📄', 'Contracts')}
+          {nav('savings', '💵', 'Savings')}
+          {nav('analytics', '📈', 'Analytics')}
+          {nav('reports', '📑', 'Reports')}
+          {nav('audit', '📜', 'Audit log')}
+          {nav('fsettings', '⚙️', 'Finance settings')}
+        </div>
+        <div className="side-foot">
+          <div className="grow" style={{ minWidth: 0 }}>
+            <div className="ellipsis"><strong>{session().user.name}</strong></div>
+            <div className="small muted row">
+              <span title={st.error ?? ''}>{st.state === 'synced' ? (engine.encrypted ? '🔒 Synced · encrypted' : '✅ Synced') : st.state === 'syncing' ? '🔄 Syncing' : st.state === 'offline' ? '📴 Offline' : st.state === 'locked' ? '🔐 Waiting for key' : st.state === 'error' ? '⚠️ Sync error' : '…'}</span>
+              {others.length > 0 && <Avatars ids={others} size={16} />}
+            </div>
+          </div>
+          <button className="btn ghost sm" title="Team & account" onClick={() => go('team')}>👥</button>
+          <button className="btn ghost sm" title="Switch workspace" onClick={onSwitch}>⇄</button>
+          <button className="btn ghost sm" title="Sign out" onClick={onSignOut}>⏻</button>
+        </div>
+      </aside>
+      {open && <div className="scrim" style={{ zIndex: 24 }} onClick={() => setOpen(false)} />}
+      <main className="main">
+        <div className="topbar">
+          <button className="btn ghost menu-btn" onClick={() => setOpen(true)} aria-label="Menu">☰</button>
+          <strong className="grow ellipsis">{title(route, engine)}</strong>
+          {engine.role === 'viewer' && <span className="pill" style={{ background: '#E8912D26', color: '#E8912D' }}>View only</span>}
+        </div>
+        <div className="page">{children}</div>
+      </main>
+      {search && <SearchModal onClose={() => setSearch(false)} onTask={(id) => { setSearch(false); openTask(id); }} />}
+    </div>
+  );
+
+  function session() { return engine.session; }
+}
+
+function title(route: string, engine: SyncEngine) {
+  const [p, id] = route.split('/');
+  if (p === 'list') return engine.get('lists', id)?.name ?? 'List';
+  if (p === 'space') return engine.get('spaces', id)?.name ?? 'Space';
+  if (p === 'folder') return engine.get('folders', id)?.name ?? 'Folder';
+  return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', docs: 'Docs', chat: 'Chat', goals: 'Goals', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
+    finance: 'Finance overview', alerts: 'Alerts', budgets: 'Budgets', orders: 'Orders & expenses', approvals: 'My approvals', catalog: 'Shopping catalog', contracts: 'Contracts',
+    savings: 'Savings', analytics: 'Analytics', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings' } as Record<string, string>)[p] ?? 'MK Prod';
+}
+
+function SearchModal({ onClose, onTask }: { onClose: () => void; onTask: (id: ID) => void }) {
+  const { engine, go } = useApp();
+  const [q, setQ] = useState('');
+  const s = q.toLowerCase();
+  const hits = !s ? [] : [
+    ...engine.list('tasks').filter((t) => !t.archived && (t.title + ' ' + t.details).toLowerCase().includes(s)).slice(0, 12).map((t) => ({ k: t.id, icon: '✓', label: t.title, act: () => onTask(t.id) })),
+    ...engine.list('docs').filter((d) => (d.title + ' ' + d.body).toLowerCase().includes(s)).slice(0, 6).map((d) => ({ k: d.id, icon: '📝', label: d.title, act: () => { go('docs/' + d.id); onClose(); } })),
+    ...engine.list('orders').filter((o) => `${o.title} ${o.supplier} ${o.poNumber} ${o.number}`.toLowerCase().includes(s)).slice(0, 6).map((o) => ({ k: o.id, icon: '📦', label: `#${o.number} ${o.title}`, act: () => { go('orders/' + o.id); onClose(); } })),
+    ...engine.list('contracts').filter((c) => `${c.title} ${c.supplier}`.toLowerCase().includes(s)).slice(0, 4).map((c) => ({ k: c.id, icon: '📄', label: c.title, act: () => { go('contracts'); onClose(); } })),
+    ...engine.list('lists').filter((l) => l.name.toLowerCase().includes(s)).slice(0, 4).map((l) => ({ k: l.id, icon: '☰', label: l.name, act: () => { go('list/' + l.id); onClose(); } })),
+  ];
+  return (
+    <Modal title="Search" onClose={onClose}>
+      <input className="input" autoFocus placeholder="Tasks, docs, orders, contracts, lists…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && hits[0]?.act()} />
+      {hits.map((h) => <div key={h.k} className="nav" onClick={h.act}><span className="ic">{h.icon}</span>{h.label}</div>)}
+      {s && !hits.length && <p className="muted">No matches.</p>}
+    </Modal>
+  );
+}

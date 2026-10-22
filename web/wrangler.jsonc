@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mkprod",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    // API calls go to the Worker; everything else is the React site.
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mkprod",
+      "database_id": "7f1c1e87-1d59-4b8e-8106-e8256d8aa7a7",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "vars": {
+    // PBKDF2 rounds; the free plan's CPU budget per request is small, so keep this moderate.
+    "PBKDF2_ITERATIONS": "30000"
+  },
+  "observability": { "enabled": true }
+}
