@@ -61,6 +61,10 @@ final class CloudClient {
     private(set) var keyPair: E2E.KeyPair?
     /// Shown once after sign-up/sign-in when the account had no recovery code yet.
     var newRecoveryCode: String?
+    /// Set when the server accepted the password but wants the authenticator code (two-factor).
+    var pendingMfa: (token: String, kek: SymmetricKey, email: String)?
+    /// Set after sign-up (or sign-in to an unconfirmed account) until the emailed code is entered.
+    var needsEmailVerification = false
 
     init(config: CloudConfig) {
         self.config = config
@@ -97,7 +101,34 @@ final class CloudClient {
             // Account from before client-side encryption: prove the password once, then upgrade.
             obj = try await call("POST", "/api/auth/login", ["email": email, "authKey": pk.authKey, "password": password, "wantToken": true], auth: false)
         }
+        if obj["mfa"] as? Bool == true, let token = obj["mfaToken"] as? String {
+            pendingMfa = (token, pk.kek, email)
+            throw CloudError(message: "Enter the 6-digit code from your authenticator app.", status: 428)
+        }
         try await finishAuth(obj, kek: pk.kek, email: email)
+    }
+
+    /// Second step of a two-factor sign-in.
+    func completeMfa(code: String) async throws {
+        guard let p = pendingMfa else { throw CloudError(message: "Sign in first.") }
+        session = CloudSession(token: p.token, userId: UUID(), email: p.email, name: "")
+        do {
+            let obj = try await call("POST", "/api/auth/mfa", ["code": code, "wantToken": true])
+            pendingMfa = nil
+            try await finishAuth(obj, kek: p.kek, email: p.email)
+        } catch {
+            session = nil
+            throw error
+        }
+    }
+
+    func verifyEmail(code: String) async throws {
+        try await call("POST", "/api/auth/verify", ["code": code])
+        needsEmailVerification = false
+    }
+
+    func resendVerification() async throws {
+        try await call("POST", "/api/auth/verify/resend", [:])
     }
 
     /// Forgotten password: the recovery code unlocks the private key, which is re-locked with the new password.
@@ -129,6 +160,7 @@ final class CloudClient {
             pair = p
         }
         let me = try await call("GET", "/api/me")
+        needsEmailVerification = obj["needsVerification"] as? Bool == true || (me["user"] as? [String: Any])?["emailVerified"] as? Bool == false
         if (me["user"] as? [String: Any])?["hasRecovery"] as? Bool != true {
             let code = E2E.newRecoveryCode()
             let rk = E2E.recoveryKeys(email: s.email, code: code)
@@ -170,6 +202,8 @@ final class CloudClient {
     func clearSession() {
         session = nil
         keyPair = nil
+        pendingMfa = nil
+        needsEmailVerification = false
         Keychain.delete(account: "session")
         Keychain.delete(account: "privateKey")
     }

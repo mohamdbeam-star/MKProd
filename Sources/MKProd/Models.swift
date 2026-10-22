@@ -140,6 +140,11 @@ struct Attachment: Identifiable, Codable, Hashable {
     var name: String
     var path: String
     var added = Date()
+    /// Set when the encrypted file itself is stored on the server (uploaded from the website);
+    /// kept here so a Mac edit of the task doesn't drop the link to the file.
+    var fileId: UUID?
+    var size: Int?
+    var mime: String?
 }
 
 struct ActivityItem: Identifiable, Codable, Hashable {

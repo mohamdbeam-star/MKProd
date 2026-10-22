@@ -41,8 +41,10 @@ The team website and the sync server are one free Cloudflare Worker with a D1 da
 - **End-to-end encrypted.** Workspace content is encrypted on the Mac or in the browser (AES-256-GCM, P-256 key sharing). The server and Cloudflare only ever store ciphertext.
 - **Passwords never leave the device.** They're stretched locally (PBKDF2-SHA256, 600,000 rounds).
 - **Invites need a one-time code**, and there's a recovery code for forgotten passwords.
+- **Two-factor sign-in** (authenticator app), optional per person and enforceable per workspace by the owner; email confirmation of new accounts; sign-in alerts; a devices list; and a security log per account and per workspace.
 - **Sessions:** the website uses an HttpOnly cookie, and the Mac app stores its session and keys in the Keychain.
 - **Hardened delivery:** strict security headers on the site, and Mac data files readable only by your macOS user (on top of FileVault).
+- **Right to erasure:** delete your account, delete or transfer a workspace.
 
 Design and threat notes: **[SECURITY.md](SECURITY.md)**.
 
@@ -65,13 +67,19 @@ Available in both the Mac app and the website:
 - **Analytics**: executive overview, year over year, budget variance, spend analysis (with price variance), order time
 - **Reports**: Excel downloads on the website, CSV and a PDF executive report in the Mac app; budget import from Excel/CSV templates
 - **Audit log** of every finance action
+- **Supplier links** (website): a read-only, expiring, encrypted page per order that the supplier opens without an account to confirm, decline or ask
+- **Order record** (website): the full order with its approval trail as PDF or Excel, for auditors
+- **Approval delegation** (out of office), honoured by both clients
+- **Encrypted file attachments** on tasks (website upload/download; Mac shows them by name)
+- **Weekly summary email** every Monday
 
 See **[CLICKUP_PARITY.md](CLICKUP_PARITY.md)** for the full feature checklist.
 
 ## Tests
 
 ```bash
-Tests/run_sync_e2e.sh
+Tests/api/run.sh        # any machine with Node 20+: ~100 API checks (auth, 2FA, roles, encrypted sync, shares, files, deletion)
+Tests/run_sync_e2e.sh   # macOS only: two Mac-client processes against the real Worker, 34 checks
 ```
 
-This runs two Mac-client processes against the real Worker (`wrangler dev` with a throwaway local D1): 34 checks covering sync, merge, roles and the purchase-order workflow.
+Both start the real Worker with `wrangler dev` on a throwaway local database, with a local mail sink so email flows (verification codes, sign-in alerts, notifications) are exercised too.

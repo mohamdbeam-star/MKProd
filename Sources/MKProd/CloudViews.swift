@@ -8,6 +8,8 @@ struct CloudSettingsView: View {
     @State private var password = ""
     @State private var recoveryCode = ""
     @State private var recovering = false
+    @State private var otpCode = ""
+    @State private var verifyCode = ""
     @State private var name = ""
     @State private var newWorkspace = ""
     @State private var inviteCode = ""
@@ -37,6 +39,26 @@ struct CloudSettingsView: View {
                             Label(cloud.email, systemImage: "person.crop.circle.badge.checkmark")
                             Spacer()
                             Button("Sign out") { cloud.signOut() }
+                        }
+                        if cloud.client.needsEmailVerification {
+                            Text("Confirm your email: enter the 6-digit code we sent to \(cloud.email). Until then you can't create or join workspaces.")
+                                .font(.callout).foregroundStyle(.orange)
+                            HStack {
+                                TextField("Verification code", text: $verifyCode)
+                                Button("Confirm") { run({ try await cloud.client.verifyEmail(code: verifyCode); verifyCode = "" }) }
+                                    .disabled(verifyCode.filter(\.isNumber).count != 6 || busy)
+                                Button("Send a new code") { run { try await cloud.client.resendVerification() } }.buttonStyle(.link)
+                            }
+                        }
+                    } else if cloud.client.pendingMfa != nil {
+                        Label("Two-factor sign-in", systemImage: "lock.shield")
+                        TextField("6-digit code or backup code", text: $otpCode)
+                        HStack {
+                            Button("Continue") { run({ try await cloud.client.completeMfa(code: otpCode); otpCode = ""; password = "" }, then: afterSignIn) }
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(otpCode.count < 6 || busy)
+                            Button("Back") { cloud.client.pendingMfa = nil; otpCode = "" }.buttonStyle(.link)
+                            if busy { ProgressView().controlSize(.small) }
                         }
                     } else if recovering {
                         TextField("Email", text: $email)

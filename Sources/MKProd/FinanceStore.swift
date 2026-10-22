@@ -80,7 +80,13 @@ extension Store {
         return o.isUnbudgeted ? UnbudgetedStep.status : nil
     }
 
+    /// Own authority, or an active delegation from someone who has it (mirrors finance.ts).
     func canApprove(_ o: PurchaseOrder, member: UUID) -> Bool {
+        if canApproveDirectly(o, member: member) { return true }
+        return data.finance.activeDelegations().contains { $0.to == member && $0.from != member && canApproveDirectly(o, member: $0.from) }
+    }
+
+    func canApproveDirectly(_ o: PurchaseOrder, member: UUID) -> Bool {
         guard OrderStatus.isPending(o.status), o.status != "Pending" else { return false }
         if o.status == UnbudgetedStep.status { return member == data.currentUserId ? isFinanceAdmin : cloud.team.first { $0.id == member }.map { $0.role == "owner" || $0.role == "admin" } ?? false }
         if member == data.currentUserId && isFinanceAdmin { return true }

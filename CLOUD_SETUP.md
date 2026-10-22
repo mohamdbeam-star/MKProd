@@ -21,12 +21,13 @@ Changes made on the website show up in the Mac app and vice versa, usually withi
 
 A team of **up to about 10 people** working all day stays inside the free plan. If you outgrow it, the Workers Paid plan is $5/month. Nothing needs to change in the code.
 
-## Deploy (one time, about 2 minutes)
+## Deploy (about 2 minutes)
 
-You need Node.js and a Cloudflare account. The `wrangler` CLI on this Mac is already signed in.
+You need Node.js and a Cloudflare account (`npx wrangler login` once). The source of truth is GitHub (`mohamdbeam-star/MKProd`); nothing needs to be kept on a particular computer.
 
 ```bash
-cd web
+git clone https://github.com/mohamdbeam-star/MKProd.git
+cd MKProd/web
 npm install
 npm run deploy
 ```
@@ -113,30 +114,54 @@ Point the Mac app's server address at `http://127.0.0.1:8787` to test both clien
 - recovery code and admin password reset (with key re-sharing)
 - member removal with key rotation
 
-## Email notifications
+## Email
 
-Each teammate's app writes the email text, because only the apps can read the encrypted data. The Worker then checks the recipient's preferences (Settings › Notifications on the Mac, Team & account on the website), skips duplicates, and sends the email over SMTP. Until SMTP is configured, no email is sent and the settings screens say so.
+Emails go out from **mohamd.beam@gmail.com** through Gmail. The sender address, server and port are already in `web/wrangler.jsonc`; the only thing missing is the Gmail **App Password**, which must stay a secret:
 
-Any SMTP account works. A free option is a Gmail account with an App Password (Google Account › Security › 2-Step Verification › App passwords). Run these in `web/`; each command asks for its value:
+1. Google Account → Security → 2-Step Verification (turn it on if it isn't) → **App passwords** → create one named "MK Prod". Google shows a 16-character password once.
+2. In `web/` run `npx wrangler secret put SMTP_PASS` and paste it.
+3. `npm run deploy`, then **Send test email** under Team & account › Email notifications.
 
-```bash
-npx wrangler d1 migrations apply mkprod --remote
-npx wrangler secret put SMTP_HOST      # smtp.gmail.com
-npx wrangler secret put SMTP_PORT      # 465
-npx wrangler secret put SMTP_USER      # the Gmail address
-npx wrangler secret put SMTP_PASS      # the 16-character app password
-npx wrangler secret put SMTP_FROM      # the same Gmail address
-npm run deploy
-```
+Gmail allows about 500 emails a day from a personal account, which is plenty for a team of this size. To send from another address later, change `SMTP_USER`/`SMTP_FROM` in `wrangler.jsonc` and set the matching `SMTP_PASS`.
 
-Then use **Send test email** in Settings › Notifications.
+Until the password is set, no email is sent, accounts don't need email confirmation, and the settings screens say email is off.
 
-When emails are sent:
+### What is sent
+
+Account emails (written by the server; contain no workspace data):
+
+- **Email confirmation code** after sign-up. Until it's entered, the account can't create or join workspaces.
+- **New sign-in alert** with device, approximate location and time. Can be turned off per person.
+
+Workspace notifications (written by the teammate's app, because only the apps can read the encrypted data; the server applies the recipient's preferences, removes duplicates and sends):
 
 - **Task assigned:** to the new assignee.
 - **Task updated:** to assignees and watchers. Edits made within 15 minutes go out as one email.
 - **@mention:** to the person mentioned.
-- **Order approval:** to the people who can approve the order, and to the requester when its status changes.
+- **Order approval:** to the people who can approve the order (including delegates), and to the requester when its status changes.
 - **Contract ending:** 60, 30, 14, 7 and 1 day before the end date, to the people assigned to the contract's entity. If the contract has no entity, it goes to the owners and admins.
+- **Weekly summary** on Monday: approvals waiting, overdue and upcoming tasks, orders in progress, contracts ending within 30 days.
 
 Nobody gets an email about their own edits. Each person can turn off any type, or hide the details so the email only says that something happened.
+
+## Account security
+
+- **Two-factor sign-in** (authenticator app): Team & account › Two-factor sign-in. Scan the QR code, enter the 6-digit code, save the 8 backup codes. The **owner can require it** for the whole workspace (Workspace policy); members without it are locked out of that workspace until they turn it on.
+- **Signed-in devices:** see every device with its last activity and sign any of them out.
+- **Security activity:** sign-ins, password and two-factor changes for your account; owners and admins also see the workspace log (joins, role changes, resets, key rotations, supplier links).
+- **Delete account** (Team & account, bottom) or **delete workspace** (owner, Workspace policy). Both need the password. An owner who leaves first **transfers ownership** to a teammate.
+
+## Suppliers, files, delegation
+
+- **Supplier links:** open an order → **Share with supplier**. The supplier gets a read-only page (no account needed) showing the items, prices and delivery date, and can confirm, decline or ask a question. The page content is encrypted with a key that lives only in the link, so only whoever has the link can read it. Links expire (7–90 days) and can be revoked. Replies appear on the order.
+- **Order record:** open an order → **Record (PDF)** prints the complete order with its approval trail; **Record (Excel)** downloads the same as a workbook. For finance and auditors.
+- **Approval delegation:** Finance settings › Approval delegation. Hand your approvals to a colleague until a date (out of office). Their approvals are recorded "on behalf of" you.
+- **File attachments** on tasks (up to 25 MB each, 2 GB per workspace) are encrypted in the browser and stored in Cloudflare R2 (10 GB free). R2 has to be enabled once in the Cloudflare dashboard (R2 → Get started); `npm run deploy` then creates the `mkprod-files` bucket. If you don't want R2, remove the `r2_buckets` block from `web/wrangler.jsonc`; attachments then fall back to links only. (The Mac app shows file attachments by name; downloading them from the Mac is a planned update.)
+
+## Back-ups
+
+Cloudflare D1 keeps 30 days of point-in-time history. For anything older, export now and then (the export is ciphertext, so it can be stored anywhere):
+
+```bash
+cd web && npx wrangler d1 export mkprod --remote --output ../backups/mkprod-$(date +%F).sql
+```

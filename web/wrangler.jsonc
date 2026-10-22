@@ -17,9 +17,20 @@
       "migrations_dir": "./migrations"
     }
   ],
+  // Encrypted file attachments. `npm run deploy` creates the bucket if it doesn't exist yet.
+  // If R2 is not enabled on the Cloudflare account, remove this block: everything else keeps working.
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "mkprod-files" }
+  ],
   "vars": {
-    // PBKDF2 rounds; the free plan's CPU budget per request is small, so keep this moderate.
-    "PBKDF2_ITERATIONS": "30000"
+    // PBKDF2 rounds for accounts created before client-side stretching (legacy upgrade path only).
+    "PBKDF2_ITERATIONS": "30000",
+    // Outgoing email: Gmail with an App Password. Only the password is a secret:
+    //   npx wrangler secret put SMTP_PASS
+    "SMTP_HOST": "smtp.gmail.com",
+    "SMTP_PORT": "465",
+    "SMTP_USER": "mohamd.beam@gmail.com",
+    "SMTP_FROM": "mohamd.beam@gmail.com"
   },
   "observability": { "enabled": true }
 }

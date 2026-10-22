@@ -3,6 +3,7 @@ import { ID, addDays, iso, newDoc, startOfDay, toInputDate, fromInputDate, uid, 
 import { Avatar, Empty, Markdown, Modal, Seg, isClosed, member, useApp } from '../ui';
 import { fingerprint, newRecoveryCode, passwordKeys, randomPassword, recoveryKeys, sealScalar, unlockKeyPair } from '../crypto';
 import { api } from '../sync';
+import { DeleteAccountCard, DevicesCard, SecurityLogCard, TwoFactorCard, WorkspaceGovernanceCard } from './Security';
 
 // ---------------------------------------------------------------- Docs
 
@@ -199,9 +200,15 @@ export function TeamPage() {
   const [shown, setShown] = useState<{ title: string; value: string; note: string } | null>(null);
   const [prints, setPrints] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const [requireMfa, setRequireMfa] = useState(false);
+  const [account, setAccount] = useState<{ totpEnabled: boolean; backupCodesLeft: number; emailVerified: boolean } | null>(null);
   const base = `/api/workspaces/${engine.workspace.id}`;
-  const load = () => api<{ invites: { email: string; role: string; expires_at?: string }[] }>(`${base}/team`).then((r) => setInvites(r.invites)).catch(() => {});
+  const load = () => {
+    api<{ invites: { email: string; role: string; expires_at?: string }[]; requireMfa: boolean }>(`${base}/team`).then((r) => { setInvites(r.invites); setRequireMfa(!!r.requireMfa); }).catch(() => {});
+    api<{ user: { totpEnabled: boolean; backupCodesLeft: number; emailVerified: boolean } }>('/api/me').then((r) => setAccount(r.user)).catch(() => {});
+  };
   useEffect(() => { load(); }, []);
+  const leaveToPicker = () => { localStorage.removeItem('mkprod.workspace'); location.hash = ''; location.reload(); };
   useEffect(() => {
     Promise.all(engine.team.filter((m) => m.publicKey).map(async (m) => [m.id, await fingerprint(m.publicKey!)] as const)).then((x) => setPrints(Object.fromEntries(x)));
   }, [engine.team.map((m) => m.publicKey).join()]);
@@ -229,6 +236,7 @@ export function TeamPage() {
                 {!m.publicKey ? <span className="orange">No keys yet (signs in with an older app)</span>
                   : !m.hasKey && engine.encrypted ? <span className="orange">Waiting for key</span>
                   : <span title="Key fingerprint: compare with your teammate to rule out tampering">🔑 <span className="mono" style={{ whiteSpace: 'nowrap' }}>{prints[m.id] ?? '…'}</span></span>}
+                <div title={m.totpEnabled ? 'Two-factor sign-in is on' : 'No two-factor sign-in'} className={m.totpEnabled ? 'green' : requireMfa ? 'red' : 'muted'}>{m.totpEnabled ? '🔐 2FA on' : '2FA off'}</div>
               </td>
               <td><EntityCell memberId={m.id} /></td>
               <td style={{ width: 130 }}>{engine.isAdmin && m.role !== 'owner' && m.id !== engine.me
@@ -271,6 +279,10 @@ export function TeamPage() {
         )}
         <p className="small muted">Invites need the one-time code; knowing the email isn't enough. Each person's key fingerprint should match what they see on their own device.</p>
       </div>
+      {engine.role === 'owner' && <WorkspaceGovernanceCard requireMfa={requireMfa} onChanged={() => { load(); engine.sync(); }} onDeleted={leaveToPicker} />}
+      {engine.isAdmin && <SecurityLogCard scope="workspace" />}
+      {account && <TwoFactorCard enabled={account.totpEnabled} backupCodesLeft={account.backupCodesLeft} onChange={() => { load(); engine.sync(); }} />}
+      <DevicesCard />
       <NotificationSettings />
       <div className="card col">
         <h2>Your profile & security</h2>
@@ -307,6 +319,8 @@ export function TeamPage() {
           <button className="btn" disabled={busy} onClick={() => run(() => api('/api/auth/sessions', { method: 'DELETE' }), 'Signed out of all other devices')}>Sign out other devices</button>
         </div>
       </div>
+      <SecurityLogCard scope="me" />
+      <DeleteAccountCard onDeleted={() => { localStorage.clear(); location.href = '/'; }} />
       {shown && (
         <Modal title={shown.title} onClose={() => setShown(null)} footer={<><button className="btn" onClick={() => navigator.clipboard?.writeText(shown.value)}>Copy</button><button className="btn primary" onClick={() => setShown(null)}>Done</button></>}>
           <div className="mono" style={{ fontSize: 20, fontWeight: 700, padding: 12, borderRadius: 8, background: 'var(--hover)', textAlign: 'center', userSelect: 'all', wordBreak: 'break-all' }}>{shown.value}</div>
@@ -358,6 +372,8 @@ const NOTIFY_OPTIONS: { key: string; title: string; detail?: string }[] = [
   { key: 'mentions', title: 'Someone @mentions me' },
   { key: 'contractExpiring', title: 'A contract of my entities is ending', detail: '60, 30, 14, 7 and 1 day before the end date.' },
   { key: 'approvals', title: 'Orders need my approval or my order changes status' },
+  { key: 'weeklyDigest', title: 'Weekly summary on Monday', detail: 'Approvals waiting, overdue and upcoming tasks, orders in progress, contracts ending within 30 days.' },
+  { key: 'signInAlerts', title: 'A new device signs in to my account', detail: 'Sent even when details are hidden; contains no workspace data.' },
 ];
 
 function NotificationSettings() {

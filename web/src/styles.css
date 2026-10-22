@@ -194,3 +194,19 @@ table.t td.num, table.t th.num { text-align: right; font-variant-numeric: tabula
   .page { overflow: visible; }
   body { background: #fff; color: #000; }
 }
+
+/* ---- added with trust & compliance release */
+.banner { background: color-mix(in srgb, var(--orange) 14%, var(--panel)); color: var(--text); padding: 8px 14px; font-size: 13px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.share { min-height: 100%; padding: 12px; }
+.share .card { box-shadow: var(--shadow); }
+.danger-zone { border-color: color-mix(in srgb, var(--red) 40%, var(--line)); }
+.qr { background: #fff; padding: 8px; border-radius: 8px; width: 180px; height: 180px; }
+.codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 16px; font-family: ui-monospace, monospace; }
+.devices td { vertical-align: top; }
+.record { display: none; }
+@media print {
+  body.print-record .app, body.print-record .modal, body.print-record .scrim, body.print-record .toast, body.print-record .drawer { display: none !important; }
+  body.print-record .record { display: block; padding: 24px; color: #000; background: #fff; font-size: 12px; }
+  .record h1 { font-size: 22px; } .record table { width: 100%; border-collapse: collapse; } .record th, .record td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; } .record .num { text-align: right; }
+  .share .btn { display: none; }
+}

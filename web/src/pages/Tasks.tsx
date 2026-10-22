@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { ID, Task, addDays, fmtDate, fromInputDate, iso, newTask, startOfDay, toInputDate, uid, PRIORITIES } from '../model';
 import { Avatar, Avatars, Empty, Flag, Markdown, PrioritySelect, Seg, StatusPill, Tag, isClosed, member, statusOf, useApp } from '../ui';
 import type { SyncEngine } from '../sync';
+import { Attachments } from './Procurement';
 
 // ---------------------------------------------------------------- task helpers (mirror Store.swift)
 
@@ -521,6 +522,8 @@ export function TaskDrawer({ id, onClose }: { id: ID; onClose: () => void }) {
               </div>
             ))}
           </div>
+
+          <Attachments items={t.attachments} onChange={(fn) => up((x) => { fn(x.attachments); })} />
 
           <div className="section">
             <h3>Comments</h3>

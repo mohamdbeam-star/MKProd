@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { Budget, CatalogItem, Contract, ID, Order, Saving, iso, newOrderDraft, toInputDate, fromInputDate, uid, addDays } from '../model';
 import { Avatar, CHART_COLORS, ChartBox, Empty, KPI, Modal, Pill, UtilBar, member, useApp } from '../ui';
 import { Figures, S, add, balance, isOutgoing, isPending, orderAmount, utilization, zero } from '../finance';
+import { DelegationsCard, OrderRecordPrint, SupplierLinks, exportOrderRecord, printRecord } from './Procurement';
 
 const year = new Date().getFullYear();
 
@@ -339,14 +340,18 @@ function OrderDetail({ id, onClose }: { id: ID; onClose: () => void }) {
   const [po, setPo] = useState('');
   const [tracking, setTracking] = useState('');
   const canApprove = fin.canApprove(o);
+  const behalf = fin.approvingOnBehalfOf(o);
   const next = fin.fulfilmentActions(o);
   const b = fin.budget(o.budgetId);
   return (
     <Modal wide title={`#${o.number} · ${o.title}`} onClose={onClose} footer={<>
       {o.requestedBy === engine.me && isPending(o.status) && <button className="btn danger" onClick={() => fin.setStatus(o.id, S.cancelled, { note: 'Withdrawn by requester' })}>Withdraw</button>}
       {fin.isAdmin && <button className="btn danger" onClick={() => { engine.remove('orders', o.id); fin.audit(`Deleted order #${o.number}`, o.title); onClose(); }}>Delete</button>}
+      <button className="btn" title="Full order with approval trail, for auditors" onClick={printRecord}>🖨 Record (PDF)</button>
+      <button className="btn" onClick={() => exportOrderRecord(engine, fin, o)}>⬇ Record (Excel)</button>
       <span className="grow" /><button className="btn" onClick={onClose}>Close</button>
     </>}>
+      <OrderRecordPrint order={o} />
       <div className="row"><Pill text={o.status} color={statusColor(o.status)} />{o.isUnbudgeted && <span className="small red">UNBUDGETED</span>}<span className="right" style={{ fontSize: 22, fontWeight: 800 }}>{fin.money(orderAmount(o))}</span></div>
       <div className="props">
         <span className="k">Type</span><span>{o.type === 'order' ? 'Purchase order' : 'Direct expense'}</span>
@@ -368,6 +373,7 @@ function OrderDetail({ id, onClose }: { id: ID; onClose: () => void }) {
       {(canApprove || next.length > 0) && (
         <div className="card col" style={{ background: 'var(--accent-soft)' }}>
           <h3>{canApprove ? 'Your decision' : 'Fulfilment'}</h3>
+          {behalf && <div className="small orange">You are approving on behalf of {member(engine, behalf)?.name} (delegated to you).</div>}
           <input className="input" placeholder="Note (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
           <div className="row wrap">
             {(canApprove ? !fin.nextStatus(o.status, o) && o.type === 'order' : next.includes(S.ordered)) && <input className="input" placeholder="PO number" value={po} onChange={(e) => setPo(e.target.value)} style={{ width: 160 }} />}
@@ -380,6 +386,7 @@ function OrderDetail({ id, onClose }: { id: ID; onClose: () => void }) {
           </div>
         </div>
       )}
+      <SupplierLinks order={o} />
       <h3>History</h3>
       {[...o.history].reverse().map((h) => (
         <div key={h.id} className="row" style={{ alignItems: 'flex-start' }}>
@@ -717,6 +724,7 @@ export function FinanceSettingsPage() {
           </div>
         ))}
       </div>
+      <DelegationsCard />
       <div className="grid g2">
         <div className="card col"><h3>Fiscal years</h3><Chips values={fin.settings.years.map(String)} disabled={disabled} onChange={(v) => fin.saveSettings((s) => { s.years = v.map(Number).filter(Boolean).sort(); })} /></div>
         {lists.map(([k, label]) => <div key={k} className="card col"><h3>{label}</h3><Chips values={fin.settings[k] as string[]} disabled={disabled} onChange={(v) => fin.saveSettings((s) => { (s[k] as string[]) = v; })} /></div>)}

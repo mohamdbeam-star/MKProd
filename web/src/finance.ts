@@ -79,14 +79,45 @@ export class Finance {
     return o.isUnbudgeted ? S.unbudgeted : null;
   }
 
+  /** Own authority, or an active delegation from someone who has it. */
   canApprove(o: Order, member: ID = this.e.me): boolean {
+    if (this.canApproveDirectly(o, member)) return true;
+    return this.delegatorsFor(member).some((from) => this.canApproveDirectly(o, from));
+  }
+
+  canApproveDirectly(o: Order, member: ID): boolean {
     if (!isPending(o.status) || o.status === 'Pending') return false;
-    const memberIsAdmin = member === this.e.me ? this.isAdmin : ['owner', 'admin'].includes(this.e.team.find((m) => m.id === member)?.role ?? '');
+    const memberIsAdmin = ['owner', 'admin'].includes(this.e.team.find((m) => m.id === member)?.role ?? (member === this.e.me ? this.e.role : ''));
     if (o.status === S.unbudgeted) return memberIsAdmin;
-    if (member === this.e.me && this.isAdmin) return true;
+    if (memberIsAdmin) return true;
     const role = this.entity(o.entityId)?.roles.find((r) => r.memberId === member)?.role;
     if (!role || role === 'Requestor') return false;
     return o.status === `Pending ${role}` || o.status === 'Pending Approval';
+  }
+
+  /** Delegations in force today, oldest first. */
+  activeDelegations(today = new Date()) {
+    const t = startOfDay(today).getTime();
+    return (this.settings.delegations ?? []).filter((d) => new Date(d.until).getTime() >= t);
+  }
+
+  delegatorsFor(member: ID): ID[] {
+    return this.activeDelegations().filter((d) => d.to === member && d.from !== member).map((d) => d.from);
+  }
+
+  /** Who `member` is acting for when approving `o`, if not themself. */
+  approvingOnBehalfOf(o: Order, member: ID = this.e.me): ID | undefined {
+    if (this.canApproveDirectly(o, member)) return undefined;
+    return this.delegatorsFor(member).find((from) => this.canApproveDirectly(o, from));
+  }
+
+  addDelegation(from: ID, to: ID, until: string, note = '') {
+    this.saveSettings((s) => { s.delegations = [...(s.delegations ?? []), { id: uid(), from, to, until, note }]; });
+    this.audit('Delegated approvals', `${this.e.members.find((m) => m.id === from)?.name} → ${this.e.members.find((m) => m.id === to)?.name} until ${until.slice(0, 10)}`);
+  }
+
+  removeDelegation(id: ID) {
+    this.saveSettings((s) => { s.delegations = (s.delegations ?? []).filter((d) => d.id !== id); });
   }
 
   nextNumber() {
@@ -119,24 +150,28 @@ export class Finance {
     const o = this.e.get('orders', id);
     if (!o || !this.canApprove(o)) return;
     const next = this.nextStatus(o.status, o);
+    const behalf = this.approvingOnBehalfOf(o);
+    const tag = behalf ? ` (on behalf of ${this.e.members.find((m) => m.id === behalf)?.name ?? 'a colleague'})` : '';
     this.e.update('orders', id, (x) => {
       const from = x.status;
       if (poNumber) x.poNumber = poNumber;
       x.status = next ?? S.approved;
       if (!next) { x.approvedBy = this.e.me; x.approvedDate = iso(); }
-      x.history.push({ id: uid(), date: iso(), memberId: this.e.me, action: 'Approved', from, to: x.status, note });
+      x.history.push({ id: uid(), date: iso(), memberId: this.e.me, action: 'Approved' + tag, from, to: x.status, note });
     });
-    this.audit(`Approved order #${o.number}`, note);
+    this.audit(`Approved order #${o.number}${tag}`, note);
   }
 
   reject(id: ID, reason: string) {
     const o = this.e.get('orders', id);
     if (!o || !this.canApprove(o)) return;
+    const behalf = this.approvingOnBehalfOf(o);
+    const tag = behalf ? ` (on behalf of ${this.e.members.find((m) => m.id === behalf)?.name ?? 'a colleague'})` : '';
     this.e.update('orders', id, (x) => {
-      x.history.push({ id: uid(), date: iso(), memberId: this.e.me, action: 'Rejected', from: x.status, to: S.rejected, note: reason });
+      x.history.push({ id: uid(), date: iso(), memberId: this.e.me, action: 'Rejected' + tag, from: x.status, to: S.rejected, note: reason });
       x.status = S.rejected;
     });
-    this.audit(`Rejected order #${o.number}`, reason);
+    this.audit(`Rejected order #${o.number}${tag}`, reason);
   }
 
   setStatus(id: ID, status: string, opts: { note?: string; tracking?: string; poNumber?: string } = {}) {

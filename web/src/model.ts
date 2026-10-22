@@ -24,12 +24,14 @@ export interface ChecklistItem { id: ID; text: string; done: boolean; assigneeId
 export interface Checklist { id: ID; name: string; items: ChecklistItem[] }
 export interface Comment { id: ID; authorId: ID; text: string; date: string; resolved: boolean; assigneeId?: ID }
 export interface Activity { id: ID; date: string; text: string }
+/** `path` is a link or file name; `fileId`/`size` are set when the encrypted file itself is stored on the server. */
+export interface Attachment { id: ID; name: string; path: string; added: string; fileId?: ID; size?: number; mime?: string }
 
 export interface Task {
   id: ID; listId: ID; parentId?: ID; title: string; details: string; statusId: ID; priority: number
   assigneeIds: ID[]; watcherIds: ID[]; tags: string[]; startDate?: string; dueDate?: string
   estimateMinutes?: number; points?: number; recurrence: string; checklists: Checklist[]; comments: Comment[]
-  attachments: { id: ID; name: string; path: string; added: string }[]; blockedBy: ID[]; linkedTaskIds: ID[]
+  attachments: Attachment[]; blockedBy: ID[]; linkedTaskIds: ID[]
   /** Swift encodes [UUID: String] as a flat [key, value, key, value] array. */
   customValues: string[]; activity: Activity[]; created: string; updated: string; completedAt?: string
   order: number; archived: boolean; isMilestone: boolean; trashedAt?: string
@@ -62,10 +64,19 @@ export interface Contract {
 }
 export interface CatalogItem { id: ID; name: string; category: string; unitPrice: number; unit: string; supplier: string; status: string; addedBy: ID; addedDate: string }
 export interface AuditEntry { id: ID; date: string; memberId: ID; action: string; details: string }
+/** "While I'm away, `to` may approve whatever `from` could approve", until the end of `until` (ISO date). */
+export interface Delegation { id: ID; from: ID; to: ID; until: string; note: string }
 export interface FinanceSettings {
   id: ID; currency: string; years: number[]; categories: string[]; contractTypes: string[]
-  itemCategories: string[]; savingsTypes: string[]; nextOrderNumber: number
+  itemCategories: string[]; savingsTypes: string[]; nextOrderNumber: number; delegations?: Delegation[]
 }
+
+/**
+ * A supplier share link created by us. `key` is the link's decryption key (URL fragment), kept
+ * here, encrypted with the workspace key like everything else, so teammates can read replies.
+ * Web-only kind: the Mac app ignores record kinds it doesn't know.
+ */
+export interface ShareLink { id: ID; kind: 'order'; refId: ID; key: string; label: string; createdBy: ID; createdAt: string; expiresAt: string }
 
 export const FINANCE_SETTINGS_ID = 'F1A2C3E4-0000-4000-8000-000000000001';
 
@@ -75,12 +86,12 @@ export interface Collections {
   channels: Channel; messages: Message; goals: Goal; timeEntries: TimeEntry; automations: { id: ID; name: string }
   dashboards: { id: ID; name: string }; templates: { id: ID; name: string }
   entities: FinEntity; budgets: Budget; orders: Order; savings: Saving; contracts: Contract
-  catalog: CatalogItem; audit: AuditEntry; financeSettings: FinanceSettings
+  catalog: CatalogItem; audit: AuditEntry; financeSettings: FinanceSettings; shares: ShareLink
 }
 export type Kind = keyof Collections;
 export const KINDS: Kind[] = [
   'spaces', 'folders', 'lists', 'tasks', 'docs', 'whiteboards', 'channels', 'messages', 'goals', 'timeEntries',
-  'automations', 'dashboards', 'templates', 'entities', 'budgets', 'orders', 'savings', 'contracts', 'catalog', 'audit', 'financeSettings',
+  'automations', 'dashboards', 'templates', 'entities', 'budgets', 'orders', 'savings', 'contracts', 'catalog', 'audit', 'financeSettings', 'shares',
 ];
 export type Data = { [K in Kind]: Record<ID, Collections[K]> };
 export const emptyData = (): Data => Object.fromEntries(KINDS.map((k) => [k, {}])) as Data;

@@ -175,6 +175,15 @@ struct AuditEntry: Identifiable, Codable, Hashable {
 }
 
 /// One per workspace: the lists that feed pickers across the finance module.
+/// "While I'm away, `to` may approve whatever `from` could approve", until the end of `until`.
+struct Delegation: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var from: UUID
+    var to: UUID
+    var until: Date
+    var note: String = ""
+}
+
 struct FinanceSettings: Identifiable, Codable, Hashable {
     static let singletonId = UUID(uuidString: "F1A2C3E4-0000-4000-8000-000000000001")!
     var id = FinanceSettings.singletonId
@@ -185,4 +194,10 @@ struct FinanceSettings: Identifiable, Codable, Hashable {
     var itemCategories: [String] = ["Stationery", "IT Equipment", "Furniture", "Cleaning", "Other"]
     var savingsTypes: [String] = ["Negotiation", "Alternative supplier", "Bulk discount", "Cancelled need"]
     var nextOrderNumber: Int = 1001
+    /// Optional so settings saved by older clients still decode; managed on the website.
+    var delegations: [Delegation]?
+
+    func activeDelegations(now: Date = Date()) -> [Delegation] {
+        (delegations ?? []).filter { $0.until >= now }
+    }
 }

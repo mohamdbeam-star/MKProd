@@ -156,3 +156,36 @@ export function newRecoveryCode(): string {
 export function randomPassword(): string {
   return b64url(crypto.getRandomValues(new Uint8Array(12)));
 }
+
+// ---------------------------------------------------------------- raw bytes (file attachments)
+
+/** AES-GCM over arbitrary bytes, same nonce ‖ ct ‖ tag layout as `seal`, returned as bytes. */
+export async function sealBytes(key: CryptoKey, plain: Bytes, aad: string): Promise<Bytes> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(aad) }, key, plain));
+  return concat(iv, ct);
+}
+
+export async function openBytes(key: CryptoKey, sealed: Bytes, aad: string): Promise<Bytes> {
+  return new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv: sealed.slice(0, 12), additionalData: enc.encode(aad) }, key, sealed.slice(12)));
+}
+
+// ---------------------------------------------------------------- supplier share links
+
+/**
+ * A share link carries its own random key in the URL fragment (never sent to the server).
+ * Whoever has the link can read the snapshot; the server only ever stores ciphertext.
+ */
+export async function newLinkKey(): Promise<{ key: CryptoKey; fragment: string }> {
+  const raw = crypto.getRandomValues(new Uint8Array(32)) as Bytes;
+  return { key: await importWorkspaceKey(raw), fragment: b64url(raw) };
+}
+
+export async function linkKeyFrom(fragment: string): Promise<CryptoKey> {
+  return importWorkspaceKey(unb64url(fragment));
+}
+
+export const sealJson = (key: CryptoKey, obj: unknown, aad: string) => seal(key, enc.encode(JSON.stringify(obj)), aad);
+export async function openJson<T = unknown>(key: CryptoKey, sealed: string, aad: string): Promise<T> {
+  return JSON.parse(dec.decode(await open(key, sealed, aad))) as T;
+}

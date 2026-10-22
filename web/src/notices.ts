@@ -113,3 +113,69 @@ export function contractNotices(e: SyncEngine, today = new Date()): Notice[] {
   }
   return out;
 }
+
+// ---------------------------------------------------------------- weekly digest
+
+/** ISO week label, e.g. "2026-W43"; used for de-duplication so each person gets one digest per week. */
+export function isoWeek(d = new Date()): string {
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = x.getUTCDay() || 7;
+  x.setUTCDate(x.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((x.getTime() - yearStart.getTime()) / 86400_000 + 1) / 7);
+  return `${x.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+/**
+ * One summary per member: approvals waiting for them, overdue and due-this-week tasks, their
+ * orders in progress, contracts ending within 30 days. Any client can compose it for everyone
+ * (the data is the same everywhere); the server sends each person's copy once per week.
+ */
+export function digestNotices(e: SyncEngine, canApprove: (o: Order, member: ID) => boolean, today = new Date()): Notice[] {
+  const week = isoWeek(today);
+  const start = startOfDay(today);
+  const weekEnd = addDays(start, 7);
+  const out: Notice[] = [];
+  const tasks = (e.list('tasks') as Task[]).filter((t) => !t.archived && !t.trashedAt && !t.completedAt);
+  const orders = e.list('orders') as Order[];
+  const contracts = (e.list('contracts') as Contract[]).filter((c) => !c.terminated);
+  const admins = e.team.filter((m) => m.role === 'owner' || m.role === 'admin').map((m) => m.id);
+  for (const m of e.members) {
+    const lines: string[] = [];
+    const approvals = orders.filter((o) => o.status.startsWith('Pending') && canApprove(o, m.id));
+    if (approvals.length) {
+      lines.push(`⏳ ${approvals.length} order(s) waiting for your approval:`);
+      approvals.slice(0, 8).forEach((o) => lines.push(`   • #${o.number} ${o.title} — ${o.supplier || 'no supplier'} — ${o.currency} ${o.items.reduce((a, i) => a + i.qty * i.unitPrice, 0).toLocaleString()}`));
+    }
+    const mine = tasks.filter((t) => t.assigneeIds.includes(m.id) && t.dueDate);
+    const overdue = mine.filter((t) => new Date(t.dueDate!) < start);
+    const dueSoon = mine.filter((t) => { const d = new Date(t.dueDate!); return d >= start && d < weekEnd; });
+    if (overdue.length) {
+      lines.push(`🔴 ${overdue.length} overdue task(s):`);
+      overdue.slice(0, 8).forEach((t) => lines.push(`   • ${t.title} (due ${day(t.dueDate)})`));
+    }
+    if (dueSoon.length) {
+      lines.push(`📅 ${dueSoon.length} task(s) due this week:`);
+      dueSoon.slice(0, 8).forEach((t) => lines.push(`   • ${t.title} (${day(t.dueDate)})`));
+    }
+    const inProgress = orders.filter((o) => o.requestedBy === m.id && ['Approved', 'Ordered', 'Shipped'].includes(o.status));
+    if (inProgress.length) {
+      lines.push(`📦 ${inProgress.length} of your orders in progress:`);
+      inProgress.slice(0, 6).forEach((o) => lines.push(`   • #${o.number} ${o.title} — ${o.status}${o.expectedDelivery ? `, expected ${day(o.expectedDelivery)}` : ''}`));
+    }
+    const ending = contracts.filter((c) => {
+      const d = new Date(c.endDate);
+      if (d < start || d > addDays(start, 30)) return false;
+      const entity = c.entityId ? e.get('entities', c.entityId) : undefined;
+      return entity ? entity.roles.some((r) => r.memberId === m.id) : admins.includes(m.id);
+    });
+    if (ending.length) {
+      lines.push(`📄 ${ending.length} contract(s) ending within 30 days:`);
+      ending.slice(0, 6).forEach((c) => lines.push(`   • ${c.title} with ${c.supplier} — ends ${day(c.endDate)}`));
+    }
+    if (!lines.length) continue;
+    out.push({ to: m.id, type: 'weeklyDigest', subject: `Your week ahead · ${approvals.length} approval(s), ${overdue.length + dueSoon.length} task(s)`, lines,
+      generic: 'Your weekly MK Prod summary is ready; open the app to see it.', dedupe: `digest:${week}:${m.id}` });
+  }
+  return out;
+}

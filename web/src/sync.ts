@@ -5,15 +5,15 @@
 
 import { Data, ID, Kind, KINDS, Member, emptyData, iso, uid, Task, Order } from './model';
 import {
-  Bytes, decryptRecord, encryptRecord, importWorkspaceKey, isEncrypted, newWorkspaceKey, open, seal,
+  Bytes, decryptRecord, encryptRecord, importWorkspaceKey, isEncrypted, newWorkspaceKey, open, openBytes, seal, sealBytes,
   unwrapWorkspaceKey, wrapWorkspaceKey,
 } from './crypto';
-import { Notice, contractNotices, orderNotices, taskNotices } from './notices';
+import { Notice, contractNotices, digestNotices, isoWeek, orderNotices, taskNotices } from './notices';
 
-export interface SessionUser { id: ID; email: string; name: string; color: string; publicKey?: string | null; encPrivateKey?: string | null }
+export interface SessionUser { id: ID; email: string; name: string; color: string; publicKey?: string | null; encPrivateKey?: string | null; emailVerified?: boolean; totpEnabled?: boolean }
 export interface Session { user: SessionUser; privateKey: CryptoKey }
 export interface WorkspaceInfo { id: ID; name: string; role: string }
-export interface TeamMember { id: ID; email: string; name: string; color: string; role: string; publicKey: string | null; hasKey: number }
+export interface TeamMember { id: ID; email: string; name: string; color: string; role: string; publicKey: string | null; hasKey: number; totpEnabled?: number }
 export interface Presence { user_id: ID; viewing: string; client: string; last_seen: string }
 export interface InboxItem { id: ID; date: string; text: string; target?: string; read: boolean }
 
@@ -321,6 +321,35 @@ export class SyncEngine {
     await this.sync();
   }
 
+  // ---- file attachments (ciphertext only ever leaves the browser)
+
+  /** Encrypts a file with the current workspace key and uploads it. Returns the stored id. */
+  async uploadFile(bytes: Bytes): Promise<{ fileId: ID; size: number }> {
+    const k = this.keys.get(this.keyVersion);
+    if (!k || !this.encrypted) throw new Error('The workspace is not encrypted yet; sync once first.');
+    const fileId = uid();
+    const sealed = await sealBytes(k.key, bytes, `${this.workspace.id}|file|${fileId}`);
+    const res = await fetch(`/api/workspaces/${this.workspace.id}/files/${fileId}`, {
+      method: 'PUT', credentials: 'same-origin', body: sealed,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-MKProd': '1', 'X-Key-Version': String(this.keyVersion) },
+    });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+    return { fileId, size: bytes.length };
+  }
+
+  async downloadFile(fileId: ID): Promise<Bytes> {
+    const res = await fetch(`/api/workspaces/${this.workspace.id}/files/${fileId}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+    const version = Number(res.headers.get('X-Key-Version')) || this.keyVersion;
+    const k = this.keys.get(version);
+    if (!k) throw new Error('You do not have the key this file was encrypted with yet.');
+    return openBytes(k.key, new Uint8Array(await res.arrayBuffer()) as Bytes, `${this.workspace.id}|file|${fileId}`);
+  }
+
+  deleteFile(fileId: ID) {
+    return api(`/api/workspaces/${this.workspace.id}/files/${fileId}`, { method: 'DELETE' });
+  }
+
   // ---- sync
 
   async sync() {
@@ -355,7 +384,7 @@ export class SyncEngine {
           size += n;
         }
         if (batch.length) await this.exchange(batch);
-        this.sendNotices([...notices, ...this.dueContractNotices()]);
+        this.sendNotices([...notices, ...this.dueContractNotices(), ...this.dueDigestNotices()]);
       } else {
         this.revertLocalEdits();
       }
@@ -531,6 +560,18 @@ export class SyncEngine {
     if (Date.now() - this.lastContractCheck < 6 * 3600_000) return [];
     this.lastContractCheck = Date.now();
     return contractNotices(this);
+  }
+
+  /** Monday morning (or the first sync after it): one digest per teammate, once per week per browser. */
+  private dueDigestNotices(): Notice[] {
+    if (!this.approvalCheck) return [];
+    const week = isoWeek();
+    const key = `mkprod.digest:${this.workspace.id}`;
+    try {
+      if (localStorage.getItem(key) === week) return [];
+      localStorage.setItem(key, week);
+    } catch { return []; }
+    return digestNotices(this, (o, m) => this.approvalCheck!(o, m));
   }
 
   private sendNotices(notices: Notice[]) {

@@ -1,5 +1,5 @@
 /**
- * MK Prod sync API (Cloudflare Worker + D1).
+ * MK Prod sync API (Cloudflare Worker + D1 + R2).
  *
  * The Mac app and the website are both clients of this API. Every synced object is a JSON
  * row in `records`; clients push changed objects and pull everything after their cursor
@@ -8,40 +8,51 @@
  * Record contents are end-to-end encrypted by the clients (see SECURITY.md): once a
  * workspace has a key version, `data` is `{"enc": "...", "v": n}` and this Worker never sees
  * plaintext. Passwords are stretched on the client; the server only receives an auth key.
+ * The same holds for file attachments (ciphertext in R2) and supplier share links (snapshot
+ * encrypted with a key that lives only in the link).
  *
  * Email notifications are composed by the clients (the only place data is readable) and
  * relayed here; the server checks the recipient is a member, applies their preferences,
- * de-duplicates and sends over SMTP (worker/email.ts).
+ * de-duplicates and sends over SMTP (worker/email.ts). Account emails (verification codes,
+ * sign-in alerts) are composed here because they contain no workspace data.
  */
 import { emailConfigured, escapeHtml, sendMails, type Mail, type SmtpEnv } from './email';
+import { newBackupCodes, newTotpSecret, normBackup, otpauthUrl, verifyTotp } from './totp';
 
 interface Env extends SmtpEnv {
   DB: D1Database;
   ASSETS: Fetcher;
+  FILES?: R2Bucket;
   PBKDF2_ITERATIONS: string;
 }
 
 type Role = 'owner' | 'admin' | 'member' | 'viewer';
-interface User { id: string; email: string; name: string; color: string }
+interface User { id: string; email: string; name: string; color: string; emailVerified: boolean; totpEnabled: boolean }
+/** Per-request context: the raw request (for IP / location) and waitUntil for background email. */
+interface Ctx { req: Request; env: Env; exec: ExecutionContext }
 
 class HttpError extends Error {
   constructor(public status: number, message: string, public extra: Record<string, unknown> = {}) { super(message); }
 }
 
 const SESSION_DAYS = 30;
+const MFA_SESSION_MS = 10 * 60_000;
 const PULL_LIMIT = 500;
 const MAX_BODY = 4 * 1024 * 1024;
 /** One synced object (a task with its comments, a doc…). D1 rows are capped at 1 MB anyway. */
 const MAX_RECORD = 900 * 1024;
+const MAX_FILE = 25 * 1024 * 1024;
+const MAX_FILES_PER_WORKSPACE = 2 * 1024 * 1024 * 1024;
+const MAX_SHARE_BLOB = 200 * 1024;
 const COOKIE = 'mkp_s';
 const COLORS = ['#7B68EE', '#5B8DEF', '#3DBE7A', '#F0A33A', '#E5484D', '#D6409F', '#12B5CB', '#8E5CF7'];
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, exec: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     try {
-      return await route(req, env, url);
+      return await route({ req, env, exec }, url);
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message, ...e.extra }, e.status);
       console.error(e);
@@ -52,56 +63,93 @@ export default {
 
 // ---------------------------------------------------------------- routing
 
-async function route(req: Request, env: Env, url: URL): Promise<Response> {
+async function route(c: Ctx, url: URL): Promise<Response> {
+  const { req, env } = c;
   const p = url.pathname.replace(/\/+$/, '');
   const m = req.method;
 
   if (p === '/api/health') return json({ ok: true });
-  if (p === '/api/auth/signup' && m === 'POST') return signup(req, env);
-  if (p === '/api/auth/login' && m === 'POST') return login(req, env);
-  if (p === '/api/auth/recover' && m === 'POST') return recoverStart(req, env);
+  if (p === '/api/auth/signup' && m === 'POST') return signup(c);
+  if (p === '/api/auth/login' && m === 'POST') return login(c);
+  if (p === '/api/auth/recover' && m === 'POST') return recoverStart(c);
 
-  const { user, tokenHash, kind } = await authenticate(req, env);
+  // Public supplier links: no account, rate-limited, ciphertext only.
+  const share = p.match(/^\/api\/share\/([0-9A-Fa-f-]{36})(\/reply)?$/);
+  if (share && !share[2] && m === 'GET') return shareGet(c, share[1].toUpperCase());
+  if (share && share[2] && m === 'POST') return shareReply(c, share[1].toUpperCase());
+
+  const { user, tokenHash, kind } = await authenticate(c);
   if (p === '/api/auth/logout' && m === 'POST') {
     await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
     return json({ ok: true }, 200, { 'Set-Cookie': clearCookie() });
   }
-  if (p === '/api/auth/recover/finish' && m === 'POST') return recoverFinish(req, env, user, tokenHash, kind);
+  if (p === '/api/auth/mfa' && m === 'POST') return mfaFinish(c, user, tokenHash, kind);
+  if (p === '/api/auth/recover/finish' && m === 'POST') return recoverFinish(c, user, tokenHash, kind);
+  if (kind === 'mfa') throw new HttpError(403, 'Enter your two-factor code first', { mfa: true });
   if (kind !== 'normal') throw new HttpError(403, 'Finish account recovery first');
 
-  if (p === '/api/auth/password' && m === 'POST') return changePassword(req, env, user, tokenHash);
+  if (p === '/api/auth/verify' && m === 'POST') return verifyEmail(c, user);
+  if (p === '/api/auth/verify/resend' && m === 'POST') return resendVerification(c, user);
+  if (p === '/api/auth/password' && m === 'POST') return changePassword(c, user, tokenHash);
+  if (p === '/api/auth/sessions' && m === 'GET') return listSessions(env, user, tokenHash);
   if (p === '/api/auth/sessions' && m === 'DELETE') {
     await env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').bind(user.id, tokenHash).run();
+    await logEvent(c, { userId: user.id, actorId: user.id, type: 'sessions_revoked_all', detail: 'Signed out of all other devices' });
     return json({ ok: true });
   }
+  const sess = p.match(/^\/api\/auth\/sessions\/([A-Za-z0-9_-]{8,64})$/);
+  if (sess && m === 'DELETE') return revokeSession(c, user, sess[1], tokenHash);
   if (p === '/api/me' && m === 'GET') return me(env, user);
   if (p === '/api/me' && m === 'PATCH') return updateMe(req, env, user);
+  if (p === '/api/me' && m === 'DELETE') return deleteAccount(c, user);
   if (p === '/api/me/keys' && m === 'PUT') return setKeys(req, env, user);
   if (p === '/api/me/recovery' && m === 'PUT') return setRecovery(req, env, user);
   if (p === '/api/me/notifications' && m === 'PUT') return setNotifyPrefs(req, env, user);
   if (p === '/api/me/notifications/test' && m === 'POST') return testEmail(env, user);
-  if (p === '/api/invites/accept' && m === 'POST') return acceptInvite(req, env, user);
-  if (p === '/api/workspaces' && m === 'POST') return createWorkspace(req, env, user);
+  if (p === '/api/me/totp/start' && m === 'POST') return totpStart(env, user);
+  if (p === '/api/me/totp/enable' && m === 'POST') return totpEnable(c, user);
+  if (p === '/api/me/totp/disable' && m === 'POST') return totpDisable(c, user);
+  if (p === '/api/me/security' && m === 'GET') return securityLog(env, { userId: user.id });
+  if (p === '/api/invites/accept' && m === 'POST') return acceptInvite(c, user);
+  if (p === '/api/workspaces' && m === 'POST') return createWorkspace(c, user);
 
   const ws = p.match(/^\/api\/workspaces\/([0-9A-Fa-f-]{36})(\/.*)?$/);
   if (!ws) throw new HttpError(404, 'Not found');
   const wsId = ws[1].toUpperCase();
   const sub = ws[2] ?? '';
-  const role = await roleOf(env, wsId, user.id);
-  if (!role) throw new HttpError(403, 'You are not a member of this workspace');
+  const wsRow = await env.DB.prepare('SELECT m.role, w.require_mfa, w.key_version, w.name FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.workspace_id = ? AND m.user_id = ?')
+    .bind(wsId, user.id).first<{ role: Role; require_mfa: number; key_version: number; name: string }>();
+  if (!wsRow) throw new HttpError(403, 'You are not a member of this workspace');
+  const role = wsRow.role;
+  if (wsRow.require_mfa && !user.totpEnabled) {
+    throw new HttpError(403, 'This workspace requires two-factor sign-in. Turn it on under Team & account › Your security, then try again.', { mfaRequired: true });
+  }
 
-  if (sub === '/sync' && m === 'POST') return sync(req, env, wsId, user, role);
-  if (sub === '/keys' && m === 'POST') return addKeys(req, env, wsId, user, role);
+  if (sub === '/sync' && m === 'POST') return sync(req, env, wsId, user, role, wsRow.key_version);
+  if (sub === '/keys' && m === 'POST') return addKeys(c, wsId, user, role);
   if (sub === '/team' && m === 'GET') return team(env, wsId, role);
   if (sub === '/notify' && m === 'POST') return notify(req, env, wsId, user, role);
+  if (sub === '/security' && m === 'GET') { requireAdmin(role); return securityLog(env, { wsId }); }
+  if (sub === '/transfer' && m === 'POST') return transferOwnership(c, wsId, user, role);
+  if (sub === '' && m === 'DELETE') return deleteWorkspace(c, wsId, user, role);
   if (sub === '' && m === 'PATCH') {
     requireAdmin(role);
-    const { name } = await body<{ name: string }>(req);
-    await env.DB.prepare('UPDATE workspaces SET name = ? WHERE id = ?').bind(str(name, 120), wsId).run();
+    const b = await body<{ name?: string; requireMfa?: boolean }>(req);
+    if (typeof b.name === 'string') {
+      await env.DB.prepare('UPDATE workspaces SET name = ? WHERE id = ?').bind(str(b.name, 120), wsId).run();
+      await logEvent(c, { wsId, actorId: user.id, type: 'workspace_renamed', detail: `Renamed to "${str(b.name, 120)}"` });
+    }
+    if (typeof b.requireMfa === 'boolean') {
+      if (role !== 'owner') throw new HttpError(403, 'Only the owner can change the two-factor requirement');
+      if (b.requireMfa && !user.totpEnabled) throw new HttpError(409, 'Turn on two-factor sign-in for your own account first');
+      await env.DB.prepare('UPDATE workspaces SET require_mfa = ? WHERE id = ?').bind(b.requireMfa ? 1 : 0, wsId).run();
+      await logEvent(c, { wsId, actorId: user.id, type: 'require_mfa_changed', detail: b.requireMfa ? 'Two-factor sign-in now required for everyone' : 'Two-factor requirement removed' });
+    }
     return json({ ok: true });
   }
   if (sub === '/invites' && m === 'POST') {
     requireAdmin(role);
+    requireVerified(user);
     const b = await body<{ email: string; role: Role }>(req);
     const email = normEmail(b.email);
     const r = oneOf(b.role, ['admin', 'member', 'viewer']);
@@ -110,13 +158,16 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     const expires = new Date(Date.now() + 14 * 86400_000).toISOString();
     await env.DB.prepare('INSERT OR REPLACE INTO invites (workspace_id, email, role, invited_by, code_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(wsId, email, r, user.id, await sha256(normCode(code)), expires).run();
+    await logEvent(c, { wsId, actorId: user.id, type: 'invite_created', detail: `Invited ${email} as ${r}` });
     // The code is shown once to the admin, who passes it to the teammate.
     return json({ code, expiresAt: expires });
   }
   const inv = sub.match(/^\/invites\/(.+)$/);
   if (inv && m === 'DELETE') {
     requireAdmin(role);
-    await env.DB.prepare('DELETE FROM invites WHERE workspace_id = ? AND email = ?').bind(wsId, decodeURIComponent(inv[1])).run();
+    const email = decodeURIComponent(inv[1]);
+    await env.DB.prepare('DELETE FROM invites WHERE workspace_id = ? AND email = ?').bind(wsId, email).run();
+    await logEvent(c, { wsId, actorId: user.id, type: 'invite_cancelled', detail: `Cancelled invite for ${email}` });
     return json({ ok: true });
   }
   const mem = sub.match(/^\/members\/([0-9A-Fa-f-]{36})(\/role|\/password)?$/);
@@ -124,11 +175,13 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
     const target = mem[1].toUpperCase();
     const targetRole = await roleOf(env, wsId, target);
     if (!targetRole) throw new HttpError(404, 'Member not found');
+    const targetName = (await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(target).first<{ email: string }>())?.email ?? target;
     if (mem[2] === '/role' && m === 'POST') {
       const r = oneOf((await body<{ role: string }>(req)).role, ['admin', 'member', 'viewer']);
       if (targetRole === 'owner') throw new HttpError(403, 'The owner role cannot be changed');
       if (role !== 'owner' && (r === 'admin' || targetRole === 'admin' || role !== 'admin')) throw new HttpError(403, 'Not allowed');
       await env.DB.prepare('UPDATE members SET role = ? WHERE workspace_id = ? AND user_id = ?').bind(r, wsId, target).run();
+      await logEvent(c, { wsId, userId: target, actorId: user.id, type: 'role_changed', detail: `${targetName}: ${targetRole} → ${r}` });
       return json({ ok: true });
     }
     if (mem[2] === '/password' && m === 'POST') {
@@ -140,43 +193,57 @@ async function route(req: Request, env: Env, url: URL): Promise<Response> {
       const { authKey } = await body<{ authKey: string }>(req);
       const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
       await env.DB.batch([
-        env.DB.prepare('UPDATE users SET pw_scheme = 2, pw_hash = ?, pw_salt = ?, pw_iter = 0, public_key = NULL, enc_private_key = NULL, rec_hash = NULL, rec_salt = NULL, enc_private_key_rec = NULL WHERE id = ?')
+        env.DB.prepare('UPDATE users SET pw_scheme = 2, pw_hash = ?, pw_salt = ?, pw_iter = 0, public_key = NULL, enc_private_key = NULL, rec_hash = NULL, rec_salt = NULL, enc_private_key_rec = NULL, totp_secret = NULL, totp_enabled = 0, totp_recovery = NULL WHERE id = ?')
           .bind(await authHash(authKey, salt), salt, target),
         env.DB.prepare('DELETE FROM workspace_keys WHERE user_id = ?').bind(target),
         env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(target),
       ]);
+      await logEvent(c, { wsId, userId: target, actorId: user.id, type: 'password_reset_admin', detail: `Password and two-factor reset for ${targetName}` });
       return json({ ok: true });
     }
     if (!mem[2] && m === 'DELETE') {
       if (target !== user.id) requireAdmin(role);
-      if (targetRole === 'owner') throw new HttpError(403, 'The owner cannot be removed');
+      if (targetRole === 'owner') throw new HttpError(403, 'The owner cannot be removed. Transfer ownership first.');
       if (targetRole === 'admin' && role !== 'owner' && target !== user.id) throw new HttpError(403, 'Not allowed');
       await env.DB.batch([
         env.DB.prepare('DELETE FROM members WHERE workspace_id = ? AND user_id = ?').bind(wsId, target),
         env.DB.prepare('DELETE FROM presence WHERE workspace_id = ? AND user_id = ?').bind(wsId, target),
         env.DB.prepare('DELETE FROM workspace_keys WHERE workspace_id = ? AND user_id = ?').bind(wsId, target),
       ]);
+      await logEvent(c, { wsId, userId: target, actorId: user.id, type: target === user.id ? 'member_left' : 'member_removed', detail: target === user.id ? `${targetName} left` : `Removed ${targetName}` });
       return json({ ok: true });
     }
   }
+  const sh = sub.match(/^\/shares(\/([0-9A-Fa-f-]{36}))?$/);
+  if (sh && !sh[2] && m === 'POST') return shareCreate(c, wsId, user, role);
+  if (sh && !sh[2] && m === 'GET') return shareList(env, wsId, url.searchParams.get('ref'));
+  if (sh && sh[2] && m === 'DELETE') return shareDelete(c, wsId, user, role, sh[2].toUpperCase());
+  const file = sub.match(/^\/files\/([0-9A-Fa-f-]{36})$/);
+  if (file && m === 'PUT') return fileUpload(c, wsId, user, role, file[1].toUpperCase(), wsRow.key_version);
+  if (file && m === 'GET') return fileDownload(env, wsId, file[1].toUpperCase());
+  if (file && m === 'DELETE') return fileDelete(c, wsId, user, role, file[1].toUpperCase());
   throw new HttpError(404, 'Not found');
 }
 
 // ---------------------------------------------------------------- auth
 
-interface UserRow extends User {
+interface UserRow extends Omit<User, 'emailVerified' | 'totpEnabled'> {
   pw_hash: string; pw_salt: string; pw_iter: number; pw_scheme: number
   public_key: string | null; enc_private_key: string | null
+  email_verified: number; totp_enabled: number; totp_secret: string | null; totp_recovery: string | null
+  rec_hash: string | null; notify_prefs: string | null
 }
 
 function publicUser(u: UserRow) {
   return {
     id: u.id, email: u.email, name: u.name, color: u.color,
     publicKey: u.public_key, encPrivateKey: u.enc_private_key,
+    emailVerified: !!u.email_verified, totpEnabled: !!u.totp_enabled,
   };
 }
 
-async function signup(req: Request, env: Env): Promise<Response> {
+async function signup(c: Ctx): Promise<Response> {
+  const { req, env } = c;
   await rateLimit(env, `signup:${ip(req)}`, 10, 3600);
   const b = await body<{ email: string; authKey: string; name?: string; publicKey?: string; encPrivateKey?: string; wantToken?: boolean }>(req);
   const email = normEmail(b.email);
@@ -187,15 +254,58 @@ async function signup(req: Request, env: Env): Promise<Response> {
   const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
   const name = str(b.name || email.split('@')[0], 80);
   const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+  // Without a mail server there is no way to verify, so accounts count as verified.
+  const needsVerification = emailConfigured(env);
   await env.DB.prepare(
-    'INSERT INTO users (id, email, name, color, pw_hash, pw_salt, pw_iter, pw_scheme, public_key, enc_private_key) VALUES (?, ?, ?, ?, ?, ?, 0, 2, ?, ?)',
-  ).bind(id, email, name, color, await authHash(authKey, salt), salt, keyField(b.publicKey, 120), keyField(b.encPrivateKey, 200)).run();
-  const token = await newSession(env, id);
-  const user = { id, email, name, color, publicKey: b.publicKey ?? null, encPrivateKey: b.encPrivateKey ?? null };
-  return json(b.wantToken ? { token, user } : { user }, 200, { 'Set-Cookie': cookie(token) });
+    'INSERT INTO users (id, email, name, color, pw_hash, pw_salt, pw_iter, pw_scheme, public_key, enc_private_key, email_verified) VALUES (?, ?, ?, ?, ?, ?, 0, 2, ?, ?, ?)',
+  ).bind(id, email, name, color, await authHash(authKey, salt), salt, keyField(b.publicKey, 120), keyField(b.encPrivateKey, 200), needsVerification ? 0 : 1).run();
+  const token = await newSession(c, id);
+  await logEvent(c, { userId: id, actorId: id, type: 'signup', detail: 'Account created' });
+  if (needsVerification) await sendVerification(c, id, email, name);
+  const user = { id, email, name, color, publicKey: b.publicKey ?? null, encPrivateKey: b.encPrivateKey ?? null, emailVerified: !needsVerification, totpEnabled: false };
+  return json(b.wantToken ? { token, user, needsVerification } : { user, needsVerification }, 200, { 'Set-Cookie': cookie(token) });
 }
 
-async function login(req: Request, env: Env): Promise<Response> {
+async function sendVerification(c: Ctx, userId: string, email: string, name: string) {
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+  const expires = new Date(Date.now() + 30 * 60_000).toISOString();
+  await c.env.DB.prepare('UPDATE users SET verify_hash = ?, verify_expires = ? WHERE id = ?').bind(await sha256(`verify:${userId}:${code}`), expires, userId).run();
+  background(c, sendMails(c.env, 'MK Prod', [renderMail(email, name, 'Your verification code',
+    [`Your MK Prod verification code is: ${code}`, 'It is valid for 30 minutes. Enter it in the app to confirm this email address.'],
+    'If you did not create an MK Prod account, you can ignore this email.')]));
+}
+
+async function verifyEmail(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  if (user.emailVerified) return json({ ok: true });
+  await rateLimit(env, `verify:${user.id}`, 10, 900);
+  const { code } = await body<{ code: string }>(req);
+  const row = await env.DB.prepare('SELECT verify_hash, verify_expires FROM users WHERE id = ?').bind(user.id).first<{ verify_hash: string | null; verify_expires: string | null }>();
+  const ok = row?.verify_hash && row.verify_expires && row.verify_expires > new Date().toISOString()
+    && timingSafeEqual(await sha256(`verify:${user.id}:${String(code ?? '').replace(/\D/g, '')}`), row.verify_hash);
+  if (!ok) throw new HttpError(400, 'That code is not right or has expired. Request a new one.');
+  await env.DB.prepare('UPDATE users SET email_verified = 1, verify_hash = NULL, verify_expires = NULL WHERE id = ?').bind(user.id).run();
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'email_verified', detail: `Verified ${user.email}` });
+  return json({ ok: true });
+}
+
+async function resendVerification(c: Ctx, user: User): Promise<Response> {
+  if (user.emailVerified) return json({ ok: true });
+  if (!emailConfigured(c.env)) {
+    await c.env.DB.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').bind(user.id).run();
+    return json({ ok: true });
+  }
+  await rateLimit(c.env, `resend:${user.id}`, 5, 3600);
+  await sendVerification(c, user.id, user.email, user.name);
+  return json({ ok: true });
+}
+
+function requireVerified(user: User) {
+  if (!user.emailVerified) throw new HttpError(403, 'Confirm your email address first (check your inbox for the code).', { needsVerification: true });
+}
+
+async function login(c: Ctx): Promise<Response> {
+  const { req, env } = c;
   const b = await body<{ email: string; authKey: string; password?: string; wantToken?: boolean }>(req);
   const email = normEmail(b.email);
   await rateLimit(env, `login-ip:${ip(req)}`, 60, 900);
@@ -218,6 +328,7 @@ async function login(req: Request, env: Env): Promise<Response> {
   }
   if (!u || !ok) {
     await env.DB.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(email, new Date().toISOString()).run();
+    if (u) await logEvent(c, { userId: u.id, type: 'signin_failed', detail: 'Wrong password' });
     throw new HttpError(401, 'Invalid email or password');
   }
   // Housekeeping on every successful login: expired sessions and stale throttling rows.
@@ -228,13 +339,99 @@ async function login(req: Request, env: Env): Promise<Response> {
     env.DB.prepare('DELETE FROM rate_events WHERE at < ?').bind(new Date(Date.now() - 86400_000).toISOString()),
     env.DB.prepare('DELETE FROM notify_log WHERE sent_at < ?').bind(new Date(Date.now() - 180 * 86400_000).toISOString()),
     env.DB.prepare('DELETE FROM presence WHERE last_seen < ?').bind(new Date(Date.now() - 7 * 86400_000).toISOString()),
+    env.DB.prepare('DELETE FROM security_events WHERE at < ?').bind(new Date(Date.now() - 365 * 86400_000).toISOString()),
+    env.DB.prepare('DELETE FROM shares WHERE expires_at < ?').bind(new Date(Date.now() - 30 * 86400_000).toISOString()),
   ]);
-  const token = await newSession(env, u.id);
-  // Browsers get only the HttpOnly cookie; native apps ask for the token to keep in their keychain.
-  return json(b.wantToken ? { token, user: publicUser(u) } : { user: publicUser(u) }, 200, { 'Set-Cookie': cookie(token) });
+  if (u.totp_enabled) {
+    // Password is right; the second factor comes in POST /api/auth/mfa with this short-lived token.
+    const mfaToken = await newSession(c, u.id, 'mfa', MFA_SESSION_MS);
+    return json({ mfa: true, mfaToken });
+  }
+  return await finishLogin(c, u, !!b.wantToken);
 }
 
-async function changePassword(req: Request, env: Env, user: User, tokenHash: string): Promise<Response> {
+/** Creates the real session, logs it, and emails a sign-in alert if the person wants them. */
+async function finishLogin(c: Ctx, u: UserRow, wantToken: boolean): Promise<Response> {
+  const token = await newSession(c, u.id);
+  const where = describeClient(c);
+  await logEvent(c, { userId: u.id, actorId: u.id, type: 'signin', detail: `Signed in from ${where.client}${where.location ? ` (${where.location})` : ''}` });
+  const prefs = prefsOf(u.notify_prefs);
+  if (prefs.email && prefs.signInAlerts && emailConfigured(c.env)) {
+    background(c, sendMails(c.env, 'MK Prod', [renderMail(u.email, u.name, 'New sign-in to your account', [
+      `Your MK Prod account was just signed in to from ${where.client}${where.location ? ` near ${where.location}` : ''}.`,
+      `Time: ${new Date().toUTCString()}. Approximate network address: ${where.ip}.`,
+      'If this was you, there is nothing to do. If not, change your password now and use "Sign out other devices" under Team & account.',
+    ], 'You can turn these alerts off in MK Prod › Settings › Notifications.')]));
+  }
+  // Browsers get only the HttpOnly cookie; native apps ask for the token to keep in their keychain.
+  return json(wantToken ? { token, user: publicUser(u) } : { user: publicUser(u) }, 200, { 'Set-Cookie': cookie(token) });
+}
+
+async function mfaFinish(c: Ctx, user: User, tokenHash: string, kind: string): Promise<Response> {
+  const { req, env } = c;
+  if (kind !== 'mfa') throw new HttpError(403, 'Not a two-factor session');
+  await rateLimit(env, `mfa:${user.id}`, 10, 900);
+  const b = await body<{ code: string; wantToken?: boolean }>(req);
+  const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<UserRow>();
+  if (!u?.totp_secret) throw new HttpError(409, 'Two-factor is not set up');
+  if (!(await checkSecondFactor(env, u, b.code))) {
+    await logEvent(c, { userId: u.id, type: 'signin_mfa_failed', detail: 'Wrong two-factor code' });
+    throw new HttpError(401, 'That code is not right. Codes change every 30 seconds.');
+  }
+  await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
+  return await finishLogin(c, u, !!b.wantToken);
+}
+
+/** Authenticator code, or one of the backup codes (which is then used up). */
+async function checkSecondFactor(env: Env, u: UserRow, code: unknown): Promise<boolean> {
+  const s = String(code ?? '').trim();
+  if (!u.totp_secret) return false;
+  if (await verifyTotp(u.totp_secret, s)) return true;
+  const hashes: string[] = u.totp_recovery ? JSON.parse(u.totp_recovery) : [];
+  const h = await sha256(`backup:${u.id}:${normBackup(s)}`);
+  const i = hashes.indexOf(h);
+  if (i < 0) return false;
+  hashes.splice(i, 1);
+  await env.DB.prepare('UPDATE users SET totp_recovery = ? WHERE id = ?').bind(JSON.stringify(hashes), u.id).run();
+  return true;
+}
+
+async function totpStart(env: Env, user: User): Promise<Response> {
+  if (user.totpEnabled) throw new HttpError(409, 'Two-factor sign-in is already on');
+  const secret = newTotpSecret();
+  await env.DB.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').bind(secret, user.id).run();
+  return json({ secret, url: otpauthUrl(secret, user.email) });
+}
+
+async function totpEnable(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  if (user.totpEnabled) throw new HttpError(409, 'Two-factor sign-in is already on');
+  await rateLimit(env, `totp-enable:${user.id}`, 10, 900);
+  const { code } = await body<{ code: string }>(req);
+  const row = await env.DB.prepare('SELECT totp_secret FROM users WHERE id = ?').bind(user.id).first<{ totp_secret: string | null }>();
+  if (!row?.totp_secret) throw new HttpError(409, 'Start the set-up first');
+  if (!(await verifyTotp(row.totp_secret, String(code ?? '')))) throw new HttpError(400, 'That code is not right. Scan the QR code again and enter the current 6 digits.');
+  const codes = newBackupCodes();
+  const hashes = await Promise.all(codes.map((x) => sha256(`backup:${user.id}:${normBackup(x)}`)));
+  await env.DB.prepare('UPDATE users SET totp_enabled = 1, totp_recovery = ? WHERE id = ?').bind(JSON.stringify(hashes), user.id).run();
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'totp_enabled', detail: 'Two-factor sign-in turned on' });
+  return json({ ok: true, backupCodes: codes });
+}
+
+async function totpDisable(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  await rateLimit(env, `totp-disable:${user.id}`, 10, 900);
+  const b = await body<{ authKey: string; code: string }>(req);
+  const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<UserRow>();
+  if (!u || !timingSafeEqual(await authHash(checkAuthKey(b.authKey), u.pw_salt), u.pw_hash)) throw new HttpError(401, 'Password is incorrect');
+  if (u.totp_enabled && !(await checkSecondFactor(env, u, b.code))) throw new HttpError(401, 'That two-factor code is not right');
+  await env.DB.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_recovery = NULL WHERE id = ?').bind(user.id).run();
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'totp_disabled', detail: 'Two-factor sign-in turned off' });
+  return json({ ok: true });
+}
+
+async function changePassword(c: Ctx, user: User, tokenHash: string): Promise<Response> {
+  const { req, env } = c;
   const b = await body<{ currentAuthKey: string; newAuthKey: string; encPrivateKey: string }>(req);
   const row = await env.DB.prepare('SELECT pw_hash, pw_salt FROM users WHERE id = ?').bind(user.id).first<{ pw_hash: string; pw_salt: string }>();
   if (!row || !timingSafeEqual(await authHash(checkAuthKey(b.currentAuthKey), row.pw_salt), row.pw_hash)) {
@@ -247,6 +444,7 @@ async function changePassword(req: Request, env: Env, user: User, tokenHash: str
     // Keep this session, sign out everywhere else.
     env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').bind(user.id, tokenHash),
   ]);
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'password_changed', detail: 'Password changed; other devices signed out' });
   return json({ ok: true });
 }
 
@@ -271,7 +469,8 @@ async function setRecovery(req: Request, env: Env, user: User): Promise<Response
 }
 
 /** Step 1 of recovery: prove the recovery code, receive the recovery-wrapped private key. */
-async function recoverStart(req: Request, env: Env): Promise<Response> {
+async function recoverStart(c: Ctx): Promise<Response> {
+  const { req, env } = c;
   await rateLimit(env, `recover:${ip(req)}`, 10, 3600);
   const b = await body<{ email: string; recAuth: string }>(req);
   const email = normEmail(b.email);
@@ -282,12 +481,13 @@ async function recoverStart(req: Request, env: Env): Promise<Response> {
     await env.DB.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(email, new Date().toISOString()).run();
     throw new HttpError(401, 'Recovery code is incorrect');
   }
-  const token = await newSession(env, u.id, 'recovery', 15 * 60_000);
+  const token = await newSession(c, u.id, 'recovery', 15 * 60_000);
   return json({ token, encPrivateKeyRec: u.enc_private_key_rec });
 }
 
 /** Step 2: set a new password (and the private key re-locked with it). */
-async function recoverFinish(req: Request, env: Env, user: User, tokenHash: string, kind: string): Promise<Response> {
+async function recoverFinish(c: Ctx, user: User, tokenHash: string, kind: string): Promise<Response> {
+  const { req, env } = c;
   if (kind !== 'recovery') throw new HttpError(403, 'Not a recovery session');
   const b = await body<{ newAuthKey: string; encPrivateKey: string; wantToken?: boolean }>(req);
   const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
@@ -296,12 +496,14 @@ async function recoverFinish(req: Request, env: Env, user: User, tokenHash: stri
       .bind(await authHash(checkAuthKey(b.newAuthKey), salt), salt, keyField(b.encPrivateKey, 200), user.id),
     env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
   ]);
-  const token = await newSession(env, user.id);
+  void tokenHash;
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'recovery_used', detail: 'Password reset with recovery code; all devices signed out' });
   const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first<UserRow>();
-  return json(b.wantToken ? { token, user: publicUser(u!) } : { user: publicUser(u!) }, 200, { 'Set-Cookie': cookie(token) });
+  return await finishLogin(c, u!, !!b.wantToken);
 }
 
-async function authenticate(req: Request, env: Env): Promise<{ user: User; tokenHash: string; kind: string }> {
+async function authenticate(c: Ctx): Promise<{ user: User; tokenHash: string; kind: string }> {
+  const { req, env } = c;
   let token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
   if (!token) {
     token = readCookie(req, COOKIE) ?? '';
@@ -310,21 +512,46 @@ async function authenticate(req: Request, env: Env): Promise<{ user: User; token
   }
   if (!token) throw new HttpError(401, 'Sign in required');
   const tokenHash = await sha256(token);
+  const now = new Date().toISOString();
   const u = await env.DB.prepare(
-    'SELECT u.id, u.email, u.name, u.color, s.kind FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?',
-  ).bind(tokenHash, new Date().toISOString()).first<User & { kind: string }>();
+    'SELECT u.id, u.email, u.name, u.color, u.email_verified, u.totp_enabled, s.kind, s.last_used FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?',
+  ).bind(tokenHash, now).first<{ id: string; email: string; name: string; color: string; email_verified: number; totp_enabled: number; kind: string; last_used: string | null }>();
   if (!u) throw new HttpError(401, 'Your session expired. Please sign in again.');
-  return { user: { id: u.id, email: u.email, name: u.name, color: u.color }, tokenHash, kind: u.kind };
+  // "Last used" for the devices list, written at most every 10 minutes to stay within D1's free writes.
+  if (!u.last_used || u.last_used < new Date(Date.now() - 10 * 60_000).toISOString()) {
+    c.exec.waitUntil(env.DB.prepare('UPDATE sessions SET last_used = ? WHERE token_hash = ?').bind(now, tokenHash).run());
+  }
+  return { user: { id: u.id, email: u.email, name: u.name, color: u.color, emailVerified: !!u.email_verified, totpEnabled: !!u.totp_enabled }, tokenHash, kind: u.kind };
 }
 
-async function newSession(env: Env, userId: string, kind = 'normal', ttlMs = SESSION_DAYS * 86400_000): Promise<string> {
+async function newSession(c: Ctx, userId: string, kind = 'normal', ttlMs = SESSION_DAYS * 86400_000): Promise<string> {
   const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const expires = new Date(Date.now() + ttlMs).toISOString();
-  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, kind) VALUES (?, ?, ?, ?)').bind(await sha256(token), userId, expires, kind).run();
+  const where = describeClient(c);
+  const now = new Date().toISOString();
+  await c.env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, kind, id, client, ip, location, last_used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(await sha256(token), userId, expires, kind, b64url(crypto.getRandomValues(new Uint8Array(12))), where.client, where.ip, where.location, now, now).run();
   return token;
 }
 
-async function acceptInvite(req: Request, env: Env, user: User): Promise<Response> {
+async function listSessions(env: Env, user: User, tokenHash: string): Promise<Response> {
+  const rows = (await env.DB.prepare(
+    "SELECT COALESCE(id, substr(token_hash, 1, 16)) AS id, client, ip, location, created_at, last_used, token_hash = ? AS current FROM sessions WHERE user_id = ? AND kind = 'normal' AND expires_at > ? ORDER BY last_used DESC",
+  ).bind(tokenHash, user.id, new Date().toISOString()).all()).results;
+  return json({ sessions: rows.map((r) => ({ ...r, current: !!r.current })) });
+}
+
+async function revokeSession(c: Ctx, user: User, id: string, tokenHash: string): Promise<Response> {
+  const r = await c.env.DB.prepare("SELECT token_hash, client FROM sessions WHERE user_id = ? AND (id = ? OR substr(token_hash, 1, 16) = ?)").bind(user.id, id, id).first<{ token_hash: string; client: string | null }>();
+  if (!r) throw new HttpError(404, 'Device not found');
+  await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(r.token_hash).run();
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'session_revoked', detail: `Signed out ${r.client ?? 'a device'}` });
+  return json({ ok: true }, 200, r.token_hash === tokenHash ? { 'Set-Cookie': clearCookie() } : {});
+}
+
+async function acceptInvite(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  requireVerified(user);
   await rateLimit(env, `invite:${user.id}`, 20, 3600);
   const { code } = await body<{ code: string }>(req);
   const inv = await env.DB.prepare('SELECT workspace_id, role, expires_at FROM invites WHERE email = ? AND code_hash = ?')
@@ -335,6 +562,7 @@ async function acceptInvite(req: Request, env: Env, user: User): Promise<Respons
     env.DB.prepare('INSERT OR IGNORE INTO members (workspace_id, user_id, role) VALUES (?, ?, ?)').bind(inv.workspace_id, user.id, inv.role),
     env.DB.prepare('DELETE FROM invites WHERE workspace_id = ? AND email = ?').bind(inv.workspace_id, user.email.toLowerCase()),
   ]);
+  await logEvent(c, { wsId: inv.workspace_id, userId: user.id, actorId: user.id, type: 'invite_accepted', detail: `${user.email} joined as ${inv.role}` });
   const w = await env.DB.prepare('SELECT id, name FROM workspaces WHERE id = ?').bind(inv.workspace_id).first<{ id: string; name: string }>();
   return json({ workspace: { ...w, role: inv.role } });
 }
@@ -343,13 +571,13 @@ async function acceptInvite(req: Request, env: Env, user: User): Promise<Respons
 
 async function me(env: Env, user: User): Promise<Response> {
   const [ws, u] = await env.DB.batch([
-    env.DB.prepare('SELECT w.id, w.name, m.role FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY w.created_at').bind(user.id),
+    env.DB.prepare('SELECT w.id, w.name, m.role, w.require_mfa AS requireMfa FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY w.created_at').bind(user.id),
     env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id),
   ]);
-  const row = u.results[0] as unknown as UserRow & { rec_hash: string | null; notify_prefs: string | null };
+  const row = u.results[0] as unknown as UserRow;
   return json({
-    user: { ...publicUser(row), hasRecovery: !!row.rec_hash, notifyPrefs: prefsOf(row.notify_prefs) },
-    workspaces: ws.results, emailEnabled: emailConfigured(env),
+    user: { ...publicUser(row), hasRecovery: !!row.rec_hash, notifyPrefs: prefsOf(row.notify_prefs), backupCodesLeft: row.totp_recovery ? (JSON.parse(row.totp_recovery) as string[]).length : 0 },
+    workspaces: (ws.results as { requireMfa: number }[]).map((w) => ({ ...w, requireMfa: !!w.requireMfa })), emailEnabled: emailConfigured(env), filesEnabled: !!env.FILES,
   });
 }
 
@@ -361,7 +589,40 @@ async function updateMe(req: Request, env: Env, user: User): Promise<Response> {
   return json({ user: { ...user, name, color } });
 }
 
-async function createWorkspace(req: Request, env: Env, user: User): Promise<Response> {
+/** Right to erasure: removes the account and every workspace only this person could own. */
+async function deleteAccount(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  const b = await body<{ authKey: string }>(req);
+  const u = await env.DB.prepare('SELECT pw_hash, pw_salt FROM users WHERE id = ?').bind(user.id).first<{ pw_hash: string; pw_salt: string }>();
+  if (!u || !timingSafeEqual(await authHash(checkAuthKey(b.authKey), u.pw_salt), u.pw_hash)) throw new HttpError(401, 'Password is incorrect');
+  const owned = (await env.DB.prepare(`
+    SELECT w.id, w.name, (SELECT COUNT(*) FROM members x WHERE x.workspace_id = w.id) AS n
+    FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? AND m.role = 'owner'`).bind(user.id).all()).results as { id: string; name: string; n: number }[];
+  const blocking = owned.filter((w) => w.n > 1);
+  if (blocking.length) {
+    throw new HttpError(409, `You own workspaces with other members: ${blocking.map((w) => w.name).join(', ')}. Transfer ownership or delete them first.`, { workspaces: blocking.map((w) => w.id) });
+  }
+  for (const w of owned) await wipeWorkspace(env, w.id);
+  await env.DB.batch([
+    // Workspaces this person created but no longer owns stay; their "created by" becomes the current owner.
+    env.DB.prepare("UPDATE workspaces SET created_by = COALESCE((SELECT user_id FROM members WHERE workspace_id = workspaces.id AND role = 'owner' LIMIT 1), created_by) WHERE created_by = ?").bind(user.id),
+    env.DB.prepare("UPDATE invites SET invited_by = COALESCE((SELECT user_id FROM members WHERE workspace_id = invites.workspace_id AND role = 'owner' LIMIT 1), invited_by) WHERE invited_by = ?").bind(user.id),
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM members WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM workspace_keys WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM presence WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM invites WHERE email = ?').bind(user.email),
+    env.DB.prepare('DELETE FROM notify_log WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM login_failures WHERE email = ?').bind(user.email),
+    env.DB.prepare('DELETE FROM security_events WHERE user_id = ? AND workspace_id IS NULL').bind(user.id),
+    env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id),
+  ]);
+  return json({ ok: true }, 200, { 'Set-Cookie': clearCookie() });
+}
+
+async function createWorkspace(c: Ctx, user: User): Promise<Response> {
+  const { req, env } = c;
+  requireVerified(user);
   const { name } = await body<{ name: string }>(req);
   const id = crypto.randomUUID().toUpperCase();
   await env.DB.batch([
@@ -369,18 +630,63 @@ async function createWorkspace(req: Request, env: Env, user: User): Promise<Resp
     env.DB.prepare("INSERT INTO members (workspace_id, user_id, role) VALUES (?, ?, 'owner')").bind(id, user.id),
     env.DB.prepare('INSERT INTO counters (workspace_id, seq) VALUES (?, 0)').bind(id),
   ]);
+  await logEvent(c, { wsId: id, actorId: user.id, type: 'workspace_created', detail: `Created "${str(name || 'Workspace', 120)}"` });
   return json({ id });
+}
+
+async function deleteWorkspace(c: Ctx, wsId: string, user: User, role: Role): Promise<Response> {
+  const { req, env } = c;
+  if (role !== 'owner') throw new HttpError(403, 'Only the owner can delete a workspace');
+  const b = await body<{ authKey: string }>(req);
+  const u = await env.DB.prepare('SELECT pw_hash, pw_salt FROM users WHERE id = ?').bind(user.id).first<{ pw_hash: string; pw_salt: string }>();
+  if (!u || !timingSafeEqual(await authHash(checkAuthKey(b.authKey), u.pw_salt), u.pw_hash)) throw new HttpError(401, 'Password is incorrect');
+  const name = (await env.DB.prepare('SELECT name FROM workspaces WHERE id = ?').bind(wsId).first<{ name: string }>())?.name ?? wsId;
+  await wipeWorkspace(env, wsId);
+  await logEvent(c, { userId: user.id, actorId: user.id, type: 'workspace_deleted', detail: `Deleted workspace "${name}"` });
+  return json({ ok: true });
+}
+
+async function wipeWorkspace(env: Env, wsId: string) {
+  if (env.FILES) {
+    const files = (await env.DB.prepare('SELECT id FROM files WHERE workspace_id = ?').bind(wsId).all()).results as { id: string }[];
+    for (let i = 0; i < files.length; i += 100) await env.FILES.delete(files.slice(i, i + 100).map((f) => `${wsId}/${f.id}`));
+  }
+  await env.DB.batch([
+    'DELETE FROM records WHERE workspace_id = ?', 'DELETE FROM counters WHERE workspace_id = ?', 'DELETE FROM members WHERE workspace_id = ?',
+    'DELETE FROM invites WHERE workspace_id = ?', 'DELETE FROM workspace_keys WHERE workspace_id = ?', 'DELETE FROM presence WHERE workspace_id = ?',
+    'DELETE FROM notify_log WHERE workspace_id = ?', 'DELETE FROM share_replies WHERE share_id IN (SELECT id FROM shares WHERE workspace_id = ?)',
+    'DELETE FROM shares WHERE workspace_id = ?', 'DELETE FROM files WHERE workspace_id = ?', 'DELETE FROM security_events WHERE workspace_id = ?',
+    'DELETE FROM workspaces WHERE id = ?',
+  ].map((q) => env.DB.prepare(q).bind(wsId)));
+}
+
+async function transferOwnership(c: Ctx, wsId: string, user: User, role: Role): Promise<Response> {
+  const { req, env } = c;
+  if (role !== 'owner') throw new HttpError(403, 'Only the owner can transfer ownership');
+  const { userId } = await body<{ userId: string }>(req);
+  const target = String(userId ?? '').toUpperCase();
+  const t = await env.DB.prepare('SELECT m.role, u.email, u.public_key FROM members m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? AND m.user_id = ?')
+    .bind(wsId, target).first<{ role: Role; email: string; public_key: string | null }>();
+  if (!t) throw new HttpError(404, 'Member not found');
+  if (target === user.id) throw new HttpError(400, 'You are already the owner');
+  if (!t.public_key) throw new HttpError(409, 'That person has no encryption keys yet; ask them to sign in with a current app first');
+  await env.DB.batch([
+    env.DB.prepare("UPDATE members SET role = 'owner' WHERE workspace_id = ? AND user_id = ?").bind(wsId, target),
+    env.DB.prepare("UPDATE members SET role = 'admin' WHERE workspace_id = ? AND user_id = ?").bind(wsId, user.id),
+  ]);
+  await logEvent(c, { wsId, userId: target, actorId: user.id, type: 'owner_transferred', detail: `Ownership transferred to ${t.email}` });
+  return json({ ok: true });
 }
 
 async function team(env: Env, wsId: string, role: Role): Promise<Response> {
   const [w, mem, inv] = await env.DB.batch([
-    env.DB.prepare('SELECT name, key_version FROM workspaces WHERE id = ?').bind(wsId),
+    env.DB.prepare('SELECT name, key_version, require_mfa FROM workspaces WHERE id = ?').bind(wsId),
     membersQuery(env, wsId),
     env.DB.prepare('SELECT email, role, expires_at FROM invites WHERE workspace_id = ? ORDER BY created_at').bind(wsId),
   ]);
-  const wr = w.results[0] as { name: string; key_version: number } | undefined;
+  const wr = w.results[0] as { name: string; key_version: number; require_mfa: number } | undefined;
   return json({
-    name: wr?.name ?? '', keyVersion: wr?.key_version ?? 0, role,
+    name: wr?.name ?? '', keyVersion: wr?.key_version ?? 0, requireMfa: !!wr?.require_mfa, role,
     members: mem.results,
     invites: role === 'owner' || role === 'admin' ? inv.results : [],
   });
@@ -388,10 +694,47 @@ async function team(env: Env, wsId: string, role: Role): Promise<Response> {
 
 function membersQuery(env: Env, wsId: string) {
   return env.DB.prepare(`
-    SELECT u.id, u.email, u.name, u.color, m.role, u.public_key AS publicKey,
+    SELECT u.id, u.email, u.name, u.color, m.role, u.public_key AS publicKey, u.totp_enabled AS totpEnabled,
            EXISTS (SELECT 1 FROM workspace_keys k JOIN workspaces w ON w.id = k.workspace_id
                    WHERE k.workspace_id = m.workspace_id AND k.user_id = u.id AND k.version = w.key_version) AS hasKey
     FROM members m JOIN users u ON u.id = m.user_id WHERE m.workspace_id = ? ORDER BY m.joined_at`).bind(wsId);
+}
+
+// ---------------------------------------------------------------- security log
+
+interface EventInput { userId?: string; wsId?: string; actorId?: string; type: string; detail: string }
+
+async function logEvent(c: Ctx, e: EventInput) {
+  const where = describeClient(c);
+  await c.env.DB.prepare('INSERT INTO security_events (id, at, user_id, workspace_id, actor_id, type, detail, ip, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID().toUpperCase(), new Date().toISOString(), e.userId ?? null, e.wsId ?? null, e.actorId ?? null, e.type, str(e.detail, 300), where.ip, where.location).run();
+}
+
+async function securityLog(env: Env, scope: { userId?: string; wsId?: string }): Promise<Response> {
+  const q = scope.wsId
+    ? env.DB.prepare('SELECT e.*, u.name AS actor_name FROM security_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.workspace_id = ? ORDER BY e.at DESC LIMIT 200').bind(scope.wsId)
+    : env.DB.prepare('SELECT e.*, u.name AS actor_name FROM security_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.user_id = ? ORDER BY e.at DESC LIMIT 200').bind(scope.userId!);
+  return json({ events: (await q.all()).results });
+}
+
+/** Human-readable device label and approximate location from the request. */
+function describeClient(c: Ctx): { client: string; ip: string; location: string | null } {
+  const ua = c.req.headers.get('User-Agent') ?? '';
+  let client = 'Unknown device';
+  if (/MKProd|CFNetwork/.test(ua)) client = 'Mac app';
+  else {
+    const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+    const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac OS X/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : '';
+    client = os ? `${browser} on ${os}` : browser;
+  }
+  const cf = (c.req as Request & { cf?: { city?: string; country?: string } }).cf;
+  const location = cf?.city && cf?.country ? `${cf.city}, ${cf.country}` : cf?.country ?? null;
+  return { client, ip: ip(c.req), location };
+}
+
+/** Email and other slow work that must not delay or fail the response. */
+function background(c: Ctx, p: Promise<unknown>) {
+  c.exec.waitUntil(p.catch((e) => console.error('background task failed', e)));
 }
 
 // ---------------------------------------------------------------- workspace keys
@@ -401,7 +744,8 @@ function membersQuery(env: Env, wsId: string) {
  * lack it; starting a new version (first encryption or rotation) is admin-only and must
  * include the caller's own copy.
  */
-async function addKeys(req: Request, env: Env, wsId: string, user: User, role: Role): Promise<Response> {
+async function addKeys(c: Ctx, wsId: string, user: User, role: Role): Promise<Response> {
+  const { req, env } = c;
   const b = await body<{ version: number; wraps: { userId: string; wrapped: string }[] }>(req);
   const w = await env.DB.prepare('SELECT key_version FROM workspaces WHERE id = ?').bind(wsId).first<{ key_version: number }>();
   const current = w?.key_version ?? 0;
@@ -421,6 +765,7 @@ async function addKeys(req: Request, env: Env, wsId: string, user: User, role: R
       .bind(wsId, String(x.userId).toUpperCase(), version, keyField(x.wrapped, 400)));
   if (version === current + 1) stmts.push(env.DB.prepare('UPDATE workspaces SET key_version = ? WHERE id = ? AND key_version = ?').bind(version, wsId, current));
   await env.DB.batch(stmts);
+  if (version === current + 1) await logEvent(c, { wsId, actorId: user.id, type: 'key_rotated', detail: current === 0 ? 'Workspace encrypted (key v1)' : `Encryption key rotated to v${version}` });
   return json({ ok: true, keyVersion: version });
 }
 
@@ -428,12 +773,10 @@ async function addKeys(req: Request, env: Env, wsId: string, user: User, role: R
 
 interface PushRecord { kind: string; id: string; data?: unknown; deleted?: boolean }
 
-async function sync(req: Request, env: Env, wsId: string, user: User, role: Role): Promise<Response> {
+async function sync(req: Request, env: Env, wsId: string, user: User, role: Role, keyVersion: number): Promise<Response> {
   const b = await body<{ cursor?: number; push?: PushRecord[]; viewing?: string; client?: string }>(req);
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
   const push = Array.isArray(b.push) ? b.push : [];
-  const w = await env.DB.prepare('SELECT key_version FROM workspaces WHERE id = ?').bind(wsId).first<{ key_version: number }>();
-  const keyVersion = w?.key_version ?? 0;
 
   if (push.length) {
     if (role === 'viewer') throw new HttpError(403, 'Viewers cannot make changes');
@@ -448,7 +791,7 @@ async function sync(req: Request, env: Env, wsId: string, user: User, role: Role
         if (d.v !== keyVersion) throw new HttpError(409, 'Encryption key changed; sync and try again', { keyVersion });
       }
       const d = r.deleted ? '{}' : JSON.stringify(r.data ?? {});
-      if (d.length > MAX_RECORD) throw new HttpError(413, 'One item is too large to sync (over 900 KB). Attach big files by link instead.');
+      if (d.length > MAX_RECORD) throw new HttpError(413, 'One item is too large to sync (over 900 KB). Attach big files instead of pasting them.');
       return { k: r.kind, i: r.id.toUpperCase(), d, x: r.deleted ? 1 : 0 };
     });
     // One transaction: assign consecutive sequence numbers and upsert every row.
@@ -494,15 +837,130 @@ async function sync(req: Request, env: Env, wsId: string, user: User, role: Role
   return new Response(out, { headers: headers() });
 }
 
-// ---------------------------------------------------------------- helpers
+// ---------------------------------------------------------------- supplier share links
+
+async function shareCreate(c: Ctx, wsId: string, user: User, role: Role): Promise<Response> {
+  const { req, env } = c;
+  if (role === 'viewer') throw new HttpError(403, 'Viewers cannot create links');
+  await rateLimit(env, `share-create:${user.id}`, 60, 3600);
+  const b = await body<{ id?: string; kind: string; refId: string; label?: string; blob: string; allowReply?: boolean; days?: number }>(req);
+  if (typeof b.kind !== 'string' || !/^[a-zA-Z]{1,40}$/.test(b.kind)) throw new HttpError(400, 'Bad kind');
+  if (typeof b.refId !== 'string' || !/^[0-9A-Fa-f-]{36}$/.test(b.refId)) throw new HttpError(400, 'Bad reference');
+  const blob = keyField(b.blob, MAX_SHARE_BLOB);
+  if (!blob) throw new HttpError(400, 'Nothing to share');
+  const days = Math.min(90, Math.max(1, Number(b.days) || 14));
+  // The client chooses the id because it is bound into the ciphertext (AAD); random UUIDs can't collide in practice.
+  const id = typeof b.id === 'string' && /^[0-9A-Fa-f-]{36}$/.test(b.id) ? b.id.toUpperCase() : crypto.randomUUID().toUpperCase();
+  if (await env.DB.prepare('SELECT 1 FROM shares WHERE id = ?').bind(id).first()) throw new HttpError(409, 'That link already exists');
+  const now = new Date().toISOString();
+  const expires = new Date(Date.now() + days * 86400_000).toISOString();
+  await env.DB.prepare('INSERT INTO shares (id, workspace_id, kind, ref_id, label, blob, allow_reply, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .bind(id, wsId, b.kind, b.refId.toUpperCase(), str(b.label ?? '', 120), blob, b.allowReply === false ? 0 : 1, user.id, now, expires).run();
+  await logEvent(c, { wsId, actorId: user.id, type: 'share_created', detail: `Supplier link created for ${b.kind} (${str(b.label ?? '', 60) || b.refId.slice(0, 8)}), ${days} days` });
+  return json({ id, expiresAt: expires });
+}
+
+async function shareList(env: Env, wsId: string, ref: string | null): Promise<Response> {
+  const q = ref
+    ? env.DB.prepare('SELECT id, kind, ref_id, label, allow_reply, created_by, created_at, expires_at, views FROM shares WHERE workspace_id = ? AND ref_id = ? ORDER BY created_at DESC').bind(wsId, ref.toUpperCase())
+    : env.DB.prepare('SELECT id, kind, ref_id, label, allow_reply, created_by, created_at, expires_at, views FROM shares WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200').bind(wsId);
+  const shares = (await q.all()).results as { id: string }[];
+  const replies = shares.length
+    ? (await env.DB.prepare(`SELECT id, share_id, blob, at FROM share_replies WHERE share_id IN (${shares.map(() => '?').join(',')}) ORDER BY at`).bind(...shares.map((s) => s.id)).all()).results as { share_id: string }[]
+    : [];
+  return json({ shares: shares.map((s) => ({ ...s, replies: replies.filter((r) => r.share_id === s.id) })) });
+}
+
+async function shareDelete(c: Ctx, wsId: string, user: User, role: Role, id: string): Promise<Response> {
+  if (role === 'viewer') throw new HttpError(403, 'Viewers cannot revoke links');
+  const r = await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM share_replies WHERE share_id IN (SELECT id FROM shares WHERE id = ? AND workspace_id = ?)').bind(id, wsId),
+    c.env.DB.prepare('DELETE FROM shares WHERE id = ? AND workspace_id = ?').bind(id, wsId),
+  ]);
+  if (r[1].meta.changes) await logEvent(c, { wsId, actorId: user.id, type: 'share_revoked', detail: `Supplier link ${id.slice(0, 8)} revoked` });
+  return json({ ok: true });
+}
+
+async function shareGet(c: Ctx, id: string): Promise<Response> {
+  await rateLimit(c.env, `share-get:${ip(c.req)}`, 120, 3600);
+  const s = await c.env.DB.prepare('SELECT kind, label, blob, allow_reply, expires_at FROM shares WHERE id = ?').bind(id).first<{ kind: string; label: string; blob: string; allow_reply: number; expires_at: string }>();
+  if (!s || s.expires_at < new Date().toISOString()) throw new HttpError(404, 'This link has expired or was removed.');
+  c.exec.waitUntil(c.env.DB.prepare('UPDATE shares SET views = views + 1 WHERE id = ?').bind(id).run());
+  return json({ kind: s.kind, label: s.label, blob: s.blob, allowReply: !!s.allow_reply, expiresAt: s.expires_at });
+}
+
+async function shareReply(c: Ctx, id: string): Promise<Response> {
+  await rateLimit(c.env, `share-reply:${ip(c.req)}`, 20, 3600);
+  const s = await c.env.DB.prepare('SELECT allow_reply, expires_at, (SELECT COUNT(*) FROM share_replies WHERE share_id = shares.id) AS n FROM shares WHERE id = ?').bind(id).first<{ allow_reply: number; expires_at: string; n: number }>();
+  if (!s || s.expires_at < new Date().toISOString()) throw new HttpError(404, 'This link has expired or was removed.');
+  if (!s.allow_reply) throw new HttpError(403, 'This link does not accept replies.');
+  if (s.n >= 20) throw new HttpError(429, 'This link has received the maximum number of replies.');
+  const { blob } = await body<{ blob: string }>(c.req);
+  const b = keyField(blob, 20 * 1024);
+  if (!b) throw new HttpError(400, 'Empty reply');
+  await c.env.DB.prepare('INSERT INTO share_replies (id, share_id, blob, at) VALUES (?, ?, ?, ?)').bind(crypto.randomUUID().toUpperCase(), id, b, new Date().toISOString()).run();
+  return json({ ok: true });
+}
+
+// ---------------------------------------------------------------- encrypted file attachments (R2)
+
+function requireFiles(env: Env): R2Bucket {
+  if (!env.FILES) throw new HttpError(503, 'File storage is not set up on this server yet (see CLOUD_SETUP.md).');
+  return env.FILES;
+}
+
+async function fileUpload(c: Ctx, wsId: string, user: User, role: Role, id: string, keyVersion: number): Promise<Response> {
+  const { req, env } = c;
+  const bucket = requireFiles(env);
+  if (role === 'viewer') throw new HttpError(403, 'Viewers cannot upload files');
+  if (keyVersion === 0) throw new HttpError(409, 'Encrypt the workspace first (sync once from an admin app)');
+  const len = Number(req.headers.get('Content-Length') ?? 0);
+  if (!len || len > MAX_FILE) throw new HttpError(413, 'Files up to 25 MB can be attached');
+  const v = Number(req.headers.get('X-Key-Version'));
+  if (v !== keyVersion) throw new HttpError(409, 'Encryption key changed; sync and try again', { keyVersion });
+  const used = (await env.DB.prepare('SELECT COALESCE(SUM(size), 0) AS n FROM files WHERE workspace_id = ?').bind(wsId).first<{ n: number }>())?.n ?? 0;
+  if (used + len > MAX_FILES_PER_WORKSPACE) throw new HttpError(413, 'This workspace has reached its 2 GB attachment limit. Delete old attachments first.');
+  const exists = await env.DB.prepare('SELECT 1 FROM files WHERE id = ?').bind(id).first();
+  if (exists) throw new HttpError(409, 'That file already exists');
+  await bucket.put(`${wsId}/${id}`, req.body, { httpMetadata: { contentType: 'application/octet-stream' } });
+  await env.DB.prepare('INSERT INTO files (id, workspace_id, size, key_version, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, wsId, len, v, user.id, new Date().toISOString()).run();
+  return json({ ok: true, id, size: len });
+}
+
+async function fileDownload(env: Env, wsId: string, id: string): Promise<Response> {
+  const bucket = requireFiles(env);
+  const meta = await env.DB.prepare('SELECT key_version FROM files WHERE id = ? AND workspace_id = ?').bind(id, wsId).first<{ key_version: number }>();
+  if (!meta) throw new HttpError(404, 'File not found');
+  const obj = await bucket.get(`${wsId}/${id}`);
+  if (!obj) throw new HttpError(404, 'File not found');
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, max-age=3600', 'X-Key-Version': String(meta.key_version),
+      'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'attachment',
+    },
+  });
+}
+
+async function fileDelete(c: Ctx, wsId: string, user: User, role: Role, id: string): Promise<Response> {
+  const bucket = requireFiles(c.env);
+  if (role === 'viewer') throw new HttpError(403, 'Viewers cannot delete files');
+  await bucket.delete(`${wsId}/${id}`);
+  await c.env.DB.prepare('DELETE FROM files WHERE id = ? AND workspace_id = ?').bind(id, wsId).run();
+  void user;
+  return json({ ok: true });
+}
 
 // ---------------------------------------------------------------- email notifications
 
-const NOTICE_TYPES = ['taskAssigned', 'taskUpdated', 'contractExpiring', 'approvals', 'mentions'] as const;
+const NOTICE_TYPES = ['taskAssigned', 'taskUpdated', 'contractExpiring', 'approvals', 'mentions', 'weeklyDigest'] as const;
 type NoticeType = (typeof NOTICE_TYPES)[number];
-type NotifyPrefs = { email: boolean; includeDetails: boolean } & Record<NoticeType, boolean>;
+/** Notice types a client may address to the sender themself (reminders and digests, not task events). */
+const SELF_OK: NoticeType[] = ['contractExpiring', 'weeklyDigest'];
+type NotifyPrefs = { email: boolean; includeDetails: boolean; signInAlerts: boolean } & Record<NoticeType, boolean>;
 const DEFAULT_PREFS: NotifyPrefs = {
-  email: true, includeDetails: true, taskAssigned: true, taskUpdated: true, contractExpiring: true, approvals: true, mentions: true,
+  email: true, includeDetails: true, signInAlerts: true,
+  taskAssigned: true, taskUpdated: true, contractExpiring: true, approvals: true, mentions: true, weeklyDigest: true,
 };
 
 function prefsOf(raw: string | null | undefined): NotifyPrefs {
@@ -553,8 +1011,8 @@ async function notify(req: Request, env: Env, wsId: string, user: User, role: Ro
   for (const n of notices) {
     const to = byId.get(String(n.to ?? '').toUpperCase());
     const type = NOTICE_TYPES.includes(n.type as NoticeType) ? (n.type as NoticeType) : null;
-    // Task events go to others; contract reminders may go to the sender too.
-    if (!to || !type || (to.id === user.id && type !== 'contractExpiring')) { skipped++; continue; }
+    // Task events go to others; reminders and digests may go to the sender too.
+    if (!to || !type || (to.id === user.id && !SELF_OK.includes(type))) { skipped++; continue; }
     const prefs = prefsOf(to.notify_prefs);
     if (!prefs.email || !prefs[type]) { skipped++; continue; }
     const dedupe = str(n.dedupe || crypto.randomUUID(), 200);
@@ -564,8 +1022,9 @@ async function notify(req: Request, env: Env, wsId: string, user: User, role: Ro
     logged.push([to.id, `${type}:${dedupe}`]);
     const detailed = prefs.includeDetails;
     const subject = detailed ? str(n.subject, 200) : str(n.generic || 'You have a new notification', 200);
-    const lines = detailed ? (Array.isArray(n.lines) ? n.lines : []).slice(0, 12).map((l) => str(l, 500)) : [str(n.generic || subject, 500)];
-    mails.push(renderMail(to.email, to.name, subject, [...lines, `From ${user.name || user.email} in ${wsName}.`], 'You can turn these emails off in MK Prod › Settings › Notifications.'));
+    const lines = detailed ? (Array.isArray(n.lines) ? n.lines : []).slice(0, type === 'weeklyDigest' ? 40 : 12).map((l) => str(l, 500)) : [str(n.generic || subject, 500)];
+    const from = type === 'weeklyDigest' ? `Your weekly summary for ${wsName}.` : `From ${user.name || user.email} in ${wsName}.`;
+    mails.push(renderMail(to.email, to.name, subject, [...lines, from], 'You can turn these emails off in MK Prod › Settings › Notifications.'));
   }
   if (!mails.length) return json({ sent: 0, skipped });
   try {
@@ -588,6 +1047,8 @@ function renderMail(to: string, name: string, subject: string, lines: string[], 
 <p style="color:#8a8f98;font-size:12px;margin-top:20px">${escapeHtml(footer)}</p></div>`;
   return { to, subject: `[MK Prod] ${subject}`, text, html };
 }
+
+// ---------------------------------------------------------------- helpers
 
 async function roleOf(env: Env, wsId: string, userId: string): Promise<Role | null> {
   const r = await env.DB.prepare('SELECT role FROM members WHERE workspace_id = ? AND user_id = ?').bind(wsId, userId).first<{ role: Role }>();

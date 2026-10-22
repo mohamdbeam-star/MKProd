@@ -10,6 +10,7 @@ import {
   AlertsPage, AnalyticsPage, AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceOverview, FinanceSettingsPage,
   OrdersPage, ReportsPage, SavingsPage,
 } from './pages/Finance';
+import { SharePage } from './pages/Share';
 
 const USER_KEY = 'mkprod.user';
 const WS_KEY = 'mkprod.workspace';
@@ -28,7 +29,8 @@ async function restoreSession(): Promise<Session | null> {
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
-  useEffect(() => { restoreSession().then(setSession); }, []);
+  const isShare = location.pathname.startsWith('/share/');
+  useEffect(() => { if (!isShare) restoreSession().then(setSession); }, []);
 
   const signOut = useCallback(async () => {
     await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
@@ -39,6 +41,8 @@ export default function App() {
     setWorkspace(null);
   }, []);
 
+  // Supplier links are public pages: no account, no workspace.
+  if (isShare) return <SharePage />;
   if (session === undefined) return null;
   if (!session) return <AuthScreen onSession={setSession} />;
   if (!workspace) return <WorkspacePicker session={session} onPick={(w) => { localStorage.setItem(WS_KEY, w.id); setWorkspace(w); }} onSignOut={signOut} />;
@@ -72,13 +76,26 @@ async function finishAuth(user: SessionUser, kek: CryptoKey, email: string): Pro
   return { session: { user, privateKey: pair.privateKey }, recoveryCode };
 }
 
+type AuthStep =
+  | { kind: 'form' }
+  | { kind: 'mfa'; mfaToken: string; kek: CryptoKey; email: string }
+  | { kind: 'verify'; result: { session: Session; recoveryCode?: string } }
+  | { kind: 'recovery'; result: { session: Session; recoveryCode: string } };
+
 function AuthScreen({ onSession }: { onSession: (s: Session) => void }) {
   const [mode, setMode] = useState<'in' | 'up' | 'recover'>('in');
   const [form, setForm] = useState({ name: '', email: '', password: '', code: '' });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
-  const [pending, setPending] = useState<{ session: Session; code: string } | null>(null);
-  const done = (r: { session: Session; recoveryCode?: string }) => (r.recoveryCode ? setPending({ session: r.session, code: r.recoveryCode }) : onSession(r.session));
+  const [step, setStep] = useState<AuthStep>({ kind: 'form' });
+
+  /** Recovery code first (shown once), then straight into the app. */
+  const done = (r: { session: Session; recoveryCode?: string }) => (r.recoveryCode ? setStep({ kind: 'recovery', result: { session: r.session, recoveryCode: r.recoveryCode } }) : onSession(r.session));
+  const afterLogin = async (res: { user: SessionUser; needsVerification?: boolean }, kek: CryptoKey, email: string) => {
+    const r = await finishAuth(res.user, kek, email);
+    if (res.needsVerification || res.user.emailVerified === false) setStep({ kind: 'verify', result: r });
+    else done(r);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -94,30 +111,41 @@ function AuthScreen({ onSession }: { onSession: (s: Session) => void }) {
         const pk = await passwordKeys(email, form.password);
         const res = await api<{ user: SessionUser }>('/api/auth/recover/finish', { bearer: r.token, body: { newAuthKey: pk.authKey, encPrivateKey: await sealScalar(pk.kek, scalar) } });
         scalar.fill(0);
-        done(await finishAuth(res.user, pk.kek, email));
+        await afterLogin(res, pk.kek, email);
         return;
       }
       const pk = await passwordKeys(email, form.password);
-      let res: { user: SessionUser };
       if (mode === 'up') {
         const k = await newKeyPair(pk.kek);
-        res = await api('/api/auth/signup', { body: { email, name: form.name, authKey: pk.authKey, publicKey: k.publicKey, encPrivateKey: k.encPrivateKey } });
-      } else {
-        try {
-          res = await api('/api/auth/login', { body: { email, authKey: pk.authKey } });
-        } catch (err) {
-          // Accounts from before client-side encryption: prove the password once, then upgrade.
-          if (!(err instanceof ApiError && err.body.legacy)) throw err;
-          res = await api('/api/auth/login', { body: { email, authKey: pk.authKey, password: form.password } });
-        }
+        const res = await api<{ user: SessionUser; needsVerification: boolean }>('/api/auth/signup', { body: { email, name: form.name, authKey: pk.authKey, publicKey: k.publicKey, encPrivateKey: k.encPrivateKey } });
+        await afterLogin(res, pk.kek, email);
+        return;
       }
-      done(await finishAuth(res.user, pk.kek, email));
+      let res: { user: SessionUser; mfa?: boolean; mfaToken?: string };
+      try {
+        res = await api('/api/auth/login', { body: { email, authKey: pk.authKey } });
+      } catch (err) {
+        // Accounts from before client-side encryption: prove the password once, then upgrade.
+        if (!(err instanceof ApiError && err.body.legacy)) throw err;
+        res = await api('/api/auth/login', { body: { email, authKey: pk.authKey, password: form.password } });
+      }
+      if (res.mfa && res.mfaToken) { setStep({ kind: 'mfa', mfaToken: res.mfaToken, kek: pk.kek, email }); return; }
+      await afterLogin(res, pk.kek, email);
     } catch (err) {
       setError((err as Error).name === 'OperationError' ? 'Could not unlock your encryption keys with this password.' : (err as Error).message);
     } finally { setBusy(''); }
   };
 
-  if (pending) return <RecoveryCodeScreen code={pending.code} onDone={() => onSession(pending.session)} />;
+  if (step.kind === 'recovery') return <RecoveryCodeScreen code={step.result.recoveryCode} onDone={() => onSession(step.result.session)} />;
+  if (step.kind === 'verify') return <VerifyEmailScreen email={step.result.session.user.email} onDone={() => done(step.result)} onSignOut={() => { setStep({ kind: 'form' }); api('/api/auth/logout', { method: 'POST' }).catch(() => {}); }} />;
+  if (step.kind === 'mfa') {
+    return (
+      <MfaScreen onCancel={() => setStep({ kind: 'form' })} onCode={async (code) => {
+        const res = await api<{ user: SessionUser }>('/api/auth/mfa', { bearer: step.mfaToken, body: { code } });
+        await afterLogin(res, step.kek, step.email);
+      }} />
+    );
+  }
   return (
     <div className="auth">
       <form className="card col" onSubmit={submit}>
@@ -136,6 +164,59 @@ function AuthScreen({ onSession }: { onSession: (s: Session) => void }) {
         {mode === 'in' && <button type="button" className="btn ghost sm" onClick={() => setMode('recover')}>Forgot password? Use your recovery code</button>}
         {mode === 'recover' && <button type="button" className="btn ghost sm" onClick={() => setMode('in')}>Back to sign in</button>}
         <p className="small muted">Your password never leaves this device; it's stretched here and used to unlock your encryption keys. No recovery code? A workspace admin can reset your password.</p>
+      </form>
+    </div>
+  );
+}
+
+function MfaScreen({ onCode, onCancel }: { onCode: (code: string) => Promise<void>; onCancel: () => void }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError('');
+    try { await onCode(code.trim()); } catch (err) { setError((err as Error).message); setBusy(false); }
+  };
+  return (
+    <div className="auth">
+      <form className="card col" onSubmit={submit}>
+        <h2>🔐 Two-factor sign-in</h2>
+        <p className="small muted">Enter the 6-digit code from your authenticator app, or one of your backup codes.</p>
+        <input className="input" autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="123 456" autoComplete="one-time-code" inputMode="numeric" style={{ fontSize: 22, textAlign: 'center', letterSpacing: 3 }} />
+        {error && <div className="red small">{error}</div>}
+        <button className="btn primary" disabled={busy || code.replace(/\W/g, '').length < 6}>{busy ? 'Checking…' : 'Continue'}</button>
+        <button type="button" className="btn ghost sm" onClick={onCancel}>Back</button>
+      </form>
+    </div>
+  );
+}
+
+/** Shown after sign-up (and to older accounts that haven't confirmed) until the emailed code is entered. */
+export function VerifyEmailScreen({ email, onDone, onSignOut }: { email: string; onDone: () => void; onSignOut: () => void }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setError('');
+    try { await api('/api/auth/verify', { body: { code: code.trim() } }); onDone(); } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  };
+  const resend = async () => {
+    setError(''); setInfo('');
+    try { await api('/api/auth/verify/resend', { body: {} }); setInfo(`A new code was sent to ${email}.`); } catch (err) { setError((err as Error).message); }
+  };
+  return (
+    <div className="auth">
+      <form className="card col" onSubmit={submit}>
+        <h2>✉️ Confirm your email</h2>
+        <p className="small muted">We sent a 6-digit code to <strong>{email}</strong>. Enter it below. Check your spam folder if it hasn't arrived after a minute.</p>
+        <input className="input" autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="123456" inputMode="numeric" autoComplete="one-time-code" style={{ fontSize: 22, textAlign: 'center', letterSpacing: 3 }} />
+        {error && <div className="red small">{error}</div>}
+        {info && <div className="green small">{info}</div>}
+        <button className="btn primary" disabled={busy || code.replace(/\D/g, '').length !== 6}>{busy ? 'Checking…' : 'Confirm'}</button>
+        <div className="row"><button type="button" className="btn ghost sm" onClick={resend}>Send a new code</button><span className="grow" /><button type="button" className="btn ghost sm" onClick={onSignOut}>Sign out</button></div>
       </form>
     </div>
   );
@@ -165,14 +246,20 @@ function WorkspacePicker({ session, onPick, onSignOut }: { session: Session; onP
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [verify, setVerify] = useState(false);
   useEffect(() => {
-    api<{ workspaces: WorkspaceInfo[] }>('/api/me').then((r) => {
+    api<{ workspaces: WorkspaceInfo[]; user: { emailVerified?: boolean } }>('/api/me').then((r) => {
       setList(r.workspaces);
+      if (r.user.emailVerified === false) { setVerify(true); return; }
       const last = localStorage.getItem(WS_KEY);
       const w = r.workspaces.find((x) => x.id === last) ?? (r.workspaces.length === 1 ? r.workspaces[0] : undefined);
       if (w) onPick(w);
     }).catch((e) => { if (e instanceof ApiError && e.status === 401) onSignOut(); else setError(e.message); });
   }, []);
+  const fail = (e: unknown) => {
+    if (e instanceof ApiError && e.body.needsVerification) setVerify(true);
+    setError((e as Error).message);
+  };
   const create = async () => {
     try {
       const { id } = await api<{ id: ID }>('/api/workspaces', { body: { name: name || 'My workspace' } });
@@ -183,14 +270,15 @@ function WorkspacePicker({ session, onPick, onSignOut }: { session: Session; onP
         ['spaces', space], ['lists', list], ['channels', { id: uid(), name: 'general' }], ['financeSettings', defaultFinanceSettings()],
       ]));
       onPick({ id, name: name || 'My workspace', role: 'owner' });
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { fail(e); }
   };
   const join = async () => {
     try {
       const r = await api<{ workspace: WorkspaceInfo }>('/api/invites/accept', { body: { code } });
       onPick(r.workspace);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { fail(e); }
   };
+  if (verify) return <VerifyEmailScreen email={session.user.email} onDone={() => { setVerify(false); setError(''); }} onSignOut={onSignOut} />;
   return (
     <div className="auth">
       <div className="card col">
@@ -386,6 +474,9 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
           <strong className="grow ellipsis">{title(route, engine)}</strong>
           {engine.role === 'viewer' && <span className="pill" style={{ background: '#E8912D26', color: '#E8912D' }}>View only</span>}
         </div>
+        {(st.state === 'error' || st.state === 'locked') && st.error && (
+          <div className="banner" onClick={() => go('team')} role="status">⚠️ {st.error}</div>
+        )}
         <div className="page">{children}</div>
       </main>
       {search && <SearchModal onClose={() => setSearch(false)} onTask={(id) => { setSearch(false); openTask(id); }} />}
