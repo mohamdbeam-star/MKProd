@@ -24,7 +24,7 @@ struct SidebarView: View {
         @Bindable var store = store
         List(selection: $store.selection) {
             Section {
-                if store.cloud.isSignedIn && store.cloud.workspaces.count > 1 {
+                if store.cloud.isSignedIn {
                     WorkspaceSwitcher()
                 }
                 Button { store.showCommandPalette = true } label: {
@@ -280,21 +280,35 @@ struct WorkspaceSwitcher: View {
 
     var body: some View {
         Menu {
-            ForEach(store.cloud.workspaces) { ws in
-                Button {
-                    guard ws.id != store.cloud.workspaceId else { return }
-                    switching = true
-                    Task { @MainActor in
-                        do { try await store.cloud.join(ws) } catch { store.lastError = error.localizedDescription }
-                        switching = false
+            Section("Shared workspaces") {
+                ForEach(store.cloud.workspaces) { ws in
+                    Button {
+                        guard ws.id != store.cloud.workspaceId else { return }
+                        switching = true
+                        Task { @MainActor in
+                            do { try await store.cloud.join(ws) } catch { store.lastError = error.localizedDescription }
+                            switching = false
+                        }
+                    } label: {
+                        if ws.id == store.cloud.workspaceId { Label(ws.name, systemImage: "checkmark") } else { Text("\(ws.name)  ·  \(ws.role)") }
                     }
-                } label: {
-                    if ws.id == store.cloud.workspaceId { Label(ws.name, systemImage: "checkmark") } else { Text("\(ws.name)  ·  \(ws.role)") }
                 }
+                if store.cloud.workspaces.isEmpty { Text("None yet") }
+            }
+            Section {
+                Button {
+                    guard store.cloud.workspaceId != nil else { return }
+                    store.cloud.disconnect()
+                } label: {
+                    if store.cloud.workspaceId == nil { Label("Local (this Mac only)", systemImage: "checkmark") } else { Text("Local (this Mac only)") }
+                }
+            }
+            Section {
+                SettingsLink { Text("Create, join or publish a workspace…") }
             }
         } label: {
             HStack {
-                Image(systemName: "building.2")
+                Image(systemName: store.cloud.workspaceId == nil ? "desktopcomputer" : "building.2")
                 Text(store.data.workspaceName).fontWeight(.semibold).lineLimit(1)
                 Spacer()
                 if switching { ProgressView().controlSize(.mini) } else { Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary) }

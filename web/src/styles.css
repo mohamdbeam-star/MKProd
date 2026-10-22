@@ -318,3 +318,11 @@ body {
 .nav:hover .more, .nav.on .more { opacity: 1; }
 .ws-head { cursor: pointer; border-radius: 10px; }
 .ws-head:hover { background: var(--hover); }
+
+/* ---- mind map */
+.mm-root { display: flex; align-items: center; gap: 28px; padding: 10px; min-width: max-content; }
+.mm-node { display: inline-block; padding: 6px 12px; border-radius: 10px; border: 1.5px solid var(--accent); background: var(--accent-soft); cursor: pointer; white-space: nowrap; }
+.mm-title { font-weight: 700; cursor: default; }
+.mm-children { display: flex; flex-direction: column; gap: 10px; border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); padding-left: 24px; margin-left: 4px; }
+.mm-branch { display: flex; align-items: center; gap: 24px; position: relative; }
+.mm-branch::before { content: ''; position: absolute; left: -24px; top: 50%; width: 20px; height: 2px; background: color-mix(in srgb, var(--accent) 40%, transparent); }

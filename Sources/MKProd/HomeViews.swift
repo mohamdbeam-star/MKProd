@@ -426,7 +426,7 @@ struct SettingsView: View {
                 ForEach(store.data.members) { Text($0.name).tag($0.id) }
             }
             LabeledContent("Data file") {
-                Button(Store.fileURL.path) { NSWorkspace.shared.activateFileViewerSelecting([Store.fileURL]) }.buttonStyle(.link)
+                Button(store.currentFileURL.path) { NSWorkspace.shared.activateFileViewerSelecting([store.currentFileURL]) }.buttonStyle(.link)
             }
             LabeledContent("Archived lists") {
                 Menu("\(store.data.lists.filter(\.archived).count) archived") {

@@ -35,23 +35,64 @@ final class Store {
     static let profile = ProcessInfo.processInfo.environment["MKPROD_HOME"]
     static let defaults = profile.flatMap { UserDefaults(suiteName: "com.mkoussa.mkprod.\(URL(fileURLWithPath: $0).lastPathComponent)") } ?? .standard
 
-    static var fileURL: URL {
+    static var dataDir: URL {
         let dir = profile.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MKProd", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        return dir.appendingPathComponent("workspace.json")
+        return dir
+    }
+
+    /// The local (this Mac only) workspace. Each shared workspace has its own file, so switching
+    /// between workspaces never discards anything.
+    static var fileURL: URL { dataDir.appendingPathComponent("workspace.json") }
+    static func fileURL(for workspaceId: UUID?) -> URL {
+        workspaceId.map { dataDir.appendingPathComponent("workspace-\($0.uuidString).json") } ?? fileURL
+    }
+    /// The file the current workspace (shared or local) is saved to.
+    var currentFileURL: URL { Store.fileURL(for: cloud.workspaceId) }
+
+    static func load(_ url: URL) -> AppData? {
+        guard let raw = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(AppData.self, from: raw)
+    }
+
+    /// Older versions kept the connected shared workspace in workspace.json, replacing the local
+    /// data (after writing a backup). Move that copy to its own file and bring the local workspace
+    /// back from the oldest backup, which is the one made when the local data was first replaced.
+    private static func migrateLayout(currentWorkspace: UUID?) {
+        guard let id = currentWorkspace else { return }
+        let target = fileURL(for: id)
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: target.path), fm.fileExists(atPath: fileURL.path) else { return }
+        try? fm.moveItem(at: fileURL, to: target)
+        let backups = ((try? fm.contentsOfDirectory(at: dataDir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("backup-") && $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if let oldest = backups.first { try? fm.copyItem(at: oldest, to: fileURL) }
     }
 
     init() {
-        if let raw = try? Data(contentsOf: Store.fileURL),
-           let decoded = try? Store.decoder.decode(AppData.self, from: raw) {
+        let wsId = Store.defaults.string(forKey: "cloudWorkspaceId").flatMap(UUID.init)
+        Store.migrateLayout(currentWorkspace: wsId)
+        if let decoded = Store.load(Store.fileURL(for: wsId)) {
             data = decoded
         } else {
-            data = SampleData.make()
+            data = wsId == nil ? SampleData.make() : AppData(currentUserId: UUID())
         }
         startTicker()
         cloud.store = self
         cloud.start()
+    }
+
+    /// Swaps the in-memory workspace (when switching between workspaces) without treating the
+    /// swap as a local edit to sync.
+    func replaceData(_ newData: AppData) {
+        saveWork?.cancel()
+        cloud.applyingRemote = true
+        data = newData
+        cloud.applyingRemote = false
+        openTaskId = nil
+        selection = .home
     }
 
     static let encoder: JSONEncoder = {
@@ -89,7 +130,7 @@ final class Store {
     func saveNow() {
         do {
             let raw = try Store.encoder.encode(data)
-            try Store.writePrivate(raw, to: Store.fileURL)
+            try Store.writePrivate(raw, to: currentFileURL)
         } catch {
             lastError = "Save failed: \(error.localizedDescription)"
         }

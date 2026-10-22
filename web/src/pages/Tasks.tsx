@@ -220,7 +220,7 @@ export function InboxPage() {
 
 // ---------------------------------------------------------------- task container
 
-type View = 'list' | 'board' | 'calendar' | 'table' | 'gantt';
+type View = 'list' | 'board' | 'calendar' | 'table' | 'gantt' | 'workload' | 'mindmap' | 'form';
 type Scope = { kind: 'everything' } | { kind: 'mine' } | { kind: 'space' | 'folder' | 'list'; id: ID };
 
 export function TasksPage({ scope }: { scope: Scope }) {
@@ -240,7 +240,8 @@ export function TasksPage({ scope }: { scope: Scope }) {
     return lists.map((l) => l.id);
   }, [engine.version, scope]);
 
-  let tasks = engine.list('tasks').filter((t) => !t.archived && !t.parentId && listIds.includes(t.listId));
+  // "My Tasks" includes subtasks assigned to you; the other views show top-level tasks (subtasks live inside their parent).
+  let tasks = engine.list('tasks').filter((t) => !t.archived && (scope.kind === 'mine' || !t.parentId) && listIds.includes(t.listId));
   if (scope.kind === 'mine') tasks = tasks.filter((t) => t.assigneeIds.includes(engine.me));
   if (search) tasks = tasks.filter((t) => (t.title + ' ' + t.tags.join(' ')).toLowerCase().includes(search.toLowerCase()));
   if (assignee) tasks = tasks.filter((t) => t.assigneeIds.includes(assignee));
@@ -275,7 +276,7 @@ export function TasksPage({ scope }: { scope: Scope }) {
   return (
     <div>
       <div className="toolbar">
-        <Seg value={view} onChange={setV} options={[{ value: 'list', label: '☰ List' }, { value: 'board', label: '▦ Board' }, { value: 'calendar', label: '📅 Calendar' }, { value: 'table', label: '▤ Table' }, { value: 'gantt', label: '▬ Gantt' }]} />
+        <Seg value={view} onChange={setV} options={[{ value: 'list', label: '☰ List' }, { value: 'board', label: '▦ Board' }, { value: 'calendar', label: '📅 Calendar' }, { value: 'table', label: '▤ Table' }, { value: 'gantt', label: '▬ Gantt' }, { value: 'workload', label: '👥 Workload' }, { value: 'mindmap', label: '🧠 Mind Map' }, { value: 'form', label: '📋 Form' }]} />
         <input className="input" placeholder="+ Add a task and press Enter" value={quick} onChange={(e) => setQuick(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addQuick()} style={{ width: 260 }} disabled={!defaultList} />
         <span className="right" />
         <input className="input" placeholder="Filter" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 140 }} />
@@ -291,11 +292,131 @@ export function TasksPage({ scope }: { scope: Scope }) {
       {defaultList && view === 'calendar' && <CalendarView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'table' && <TableView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'gantt' && <GanttView tasks={tasks} onOpen={openTask} />}
+      {defaultList && view === 'workload' && <WorkloadView tasks={tasks} onOpen={openTask} />}
+      {defaultList && view === 'mindmap' && <MindMapView title={scopeTitle(engine, scope)} tasks={tasks} onOpen={openTask} />}
+      {defaultList && view === 'form' && <FormView defaultList={defaultList} lists={listIds} />}
     </div>
   );
 }
 
 type Group = { name: string; color: string; ids: ID[]; tasks: Task[] };
+
+function scopeTitle(engine: SyncEngine, scope: Scope) {
+  if (scope.kind === 'mine') return 'My Tasks';
+  if (scope.kind === 'everything') return 'Everything';
+  const o = scope.kind === 'list' ? engine.get('lists', scope.id) : scope.kind === 'folder' ? engine.get('folders', scope.id) : engine.get('spaces', scope.id);
+  return o?.name ?? 'Tasks';
+}
+
+// ---------------------------------------------------------------- workload (mirrors WorkloadView.swift)
+
+/** Hours of estimated work per person per day, spreading each estimate across its start→due range. */
+function WorkloadView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: ID) => void }) {
+  const { engine } = useApp();
+  const [start, setStart] = useState(() => startOfDay());
+  const [capacity, setCapacity] = useState(8);
+  const days = Array.from({ length: 14 }, (_, i) => addDays(start, i));
+  const load = (memberId: ID, day: Date) => {
+    let hours = 0; const list: Task[] = [];
+    for (const t of tasks) {
+      if (!t.assigneeIds.includes(memberId) || isClosed(engine, t) || !t.dueDate) continue;
+      const due = startOfDay(new Date(t.dueDate)); const s = startOfDay(new Date(t.startDate ?? t.dueDate));
+      if (day < s || day > due) continue;
+      const span = Math.max(Math.round((due.getTime() - s.getTime()) / 86400_000) + 1, 1);
+      hours += (t.estimateMinutes ?? 60) / 60 / span; list.push(t);
+    }
+    return { hours, list };
+  };
+  return (
+    <div className="card" style={{ padding: 0 }}>
+      <div className="row" style={{ padding: 10, borderBottom: '1px solid var(--line)' }}>
+        <button className="btn sm" onClick={() => setStart(addDays(start, -7))}>‹</button>
+        <button className="btn sm" onClick={() => setStart(startOfDay())}>This week</button>
+        <button className="btn sm" onClick={() => setStart(addDays(start, 7))}>›</button>
+        <span className="grow" />
+        <span className="small muted">Capacity per day</span>
+        <input className="input" type="number" min={1} max={16} value={capacity} onChange={(e) => setCapacity(Math.max(1, Number(e.target.value) || 8))} style={{ width: 64 }} />
+        <span className="small muted">h</span>
+      </div>
+      <div style={{ overflow: 'auto' }}>
+        <table className="t" style={{ minWidth: 160 + days.length * 66 }}>
+          <thead><tr><th style={{ minWidth: 160 }}>Member</th>{days.map((d) => <th key={d.toISOString()} style={{ textAlign: 'center', width: 64 }}>{d.toLocaleDateString(undefined, { weekday: 'short' })}<br />{d.getDate()}</th>)}</tr></thead>
+          <tbody>{engine.members.map((m) => (
+            <tr key={m.id}><td><span className="row"><Avatar m={m} size={20} />{m.name}</span></td>
+              {days.map((d) => {
+                const { hours, list } = load(m.id, d);
+                const r = hours / capacity;
+                const bg = r > 1 ? 'var(--red)' : r > 0.7 ? 'var(--orange)' : r > 0 ? 'var(--green)' : 'transparent';
+                return <td key={d.toISOString()} title={list.map((t) => t.title).join('\n')} onClick={() => list[0] && onOpen(list[0].id)} style={{ textAlign: 'center', cursor: list.length ? 'pointer' : undefined, background: `color-mix(in srgb, ${bg} 22%, transparent)` }}>
+                  {hours > 0 && <div className="small" style={{ fontWeight: 700 }}>{hours.toFixed(1)}h</div>}{list.length > 0 && <div style={{ fontSize: 10 }} className="muted">{list.length} task{list.length === 1 ? '' : 's'}</div>}
+                </td>;
+              })}
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- mind map (mirrors MindMapView.swift)
+
+function MindMapView({ title, tasks, onOpen }: { title: string; tasks: Task[]; onOpen: (id: ID) => void }) {
+  const { engine } = useApp();
+  const Branch = ({ t }: { t: Task }) => {
+    const subs = engine.list('tasks').filter((x) => x.parentId === t.id && !x.archived);
+    const c = statusOf(engine, t)?.colorHex ?? '#87909E';
+    return (
+      <div className="mm-branch">
+        <span className="mm-node" style={{ borderColor: c, background: c + '26' }} onClick={() => onOpen(t.id)}>{t.title}</span>
+        {subs.length > 0 && <div className="mm-children">{subs.map((s) => <Branch key={s.id} t={s} />)}</div>}
+      </div>
+    );
+  };
+  return (
+    <div className="card" style={{ overflow: 'auto' }}>
+      <div className="mm-root">
+        <span className="mm-node mm-title">{title}</span>
+        <div className="mm-children">{tasks.map((t) => <Branch key={t.id} t={t} />)}{!tasks.length && <span className="muted small">No tasks</span>}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- form (mirrors TaskFormView.swift)
+
+/** Request form: submissions become tasks in the chosen list, the same as in the Mac app. */
+function FormView({ defaultList, lists }: { defaultList: ID; lists: ID[] }) {
+  const { engine, toast } = useApp();
+  const [f, setF] = useState({ listId: defaultList, title: '', email: '', priority: 2, due: '', details: '' });
+  const options = engine.list('lists').filter((l) => !l.archived && lists.includes(l.id));
+  const submit = () => {
+    const list = engine.get('lists', f.listId); const st = engine.get('spaces', list?.spaceId ?? '')?.statuses[0];
+    if (!list || !st || !f.title.trim()) return;
+    const t = newTask(f.listId, f.title.trim(), st.id, member(engine, engine.me));
+    t.details = f.details.trim(); t.priority = f.priority;
+    if (f.due) t.dueDate = fromInputDate(f.due);
+    t.activity.push({ id: uid(), date: iso(), text: `Submitted via form${f.email ? ` by ${f.email}` : ''}` });
+    engine.put('tasks', t);
+    setF({ ...f, title: '', details: '', due: '' });
+    toast('Submitted: a task was created');
+  };
+  return (
+    <div className="card col" style={{ maxWidth: 640 }}>
+      <h2>Request form</h2>
+      <p className="small muted">Submissions become tasks in the selected list.</p>
+      <label className="field">Submit to list<select className="input" value={f.listId} onChange={(e) => setF({ ...f, listId: e.target.value })}>{options.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select></label>
+      <label className="field">Request title *<input className="input" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
+      <label className="field">Your email<input className="input" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
+      <div className="grid g2">
+        <label className="field">Priority<select className="input" value={f.priority} onChange={(e) => setF({ ...f, priority: Number(e.target.value) })}>{PRIORITIES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}</select></label>
+        <label className="field">Needed by<input className="input" type="date" value={f.due} onChange={(e) => setF({ ...f, due: e.target.value })} /></label>
+      </div>
+      <label className="field">Details<textarea className="input" rows={4} value={f.details} onChange={(e) => setF({ ...f, details: e.target.value })} /></label>
+      <button className="btn primary" disabled={!f.title.trim()} onClick={submit} style={{ alignSelf: 'flex-end' }}>Submit</button>
+    </div>
+  );
+}
 
 function ListView({ groups, onOpen }: { groups: Group[]; onOpen: (id: ID) => void }) {
   const { engine } = useApp();

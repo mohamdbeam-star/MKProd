@@ -81,7 +81,8 @@ final class CloudSync {
     private var forcePushAll = false
     private var running = false
     private var pending = false
-    private var applyingRemote = false
+    /// True while data is being replaced by remote or switched workspaces, so the change is not treated as a local edit.
+    var applyingRemote = false
     private var timer: Timer?
     private var debounce: DispatchWorkItem?
 
@@ -99,7 +100,7 @@ final class CloudSync {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncSoon(delay: 0) }
         syncSoon(delay: 0.5)
         // Signed in but no workspace chosen yet: load the list so Settings can offer it right away.
-        if isSignedIn && workspaceId == nil { Task { @MainActor in try? await self.refreshWorkspaces() } }
+        if isSignedIn { Task { @MainActor in try? await self.refreshWorkspaces() } }
     }
 
     func localChanged() {
@@ -155,6 +156,7 @@ final class CloudSync {
         guard let store, let uid = client.session?.userId else { return }
         let obj = try await client.call("POST", "/api/workspaces", ["name": name])
         guard let idString = obj["id"] as? String, let id = UUID(uuidString: idString) else { throw CloudError(message: "Could not create the workspace.") }
+        let wasLocal = workspaceId == nil
         applyingRemote = true
         store.remapMember(from: store.data.currentUserId, to: uid)
         store.data.workspaceName = name
@@ -166,32 +168,43 @@ final class CloudSync {
         keys = [:]
         keyVersion = 0
         saveState()
+        store.saveNow() // now lives in workspace-<id>.json
+        if wasLocal {
+            // The local workspace moved to the cloud; leave an empty local one behind instead of a duplicate.
+            if let raw = try? Store.encoder.encode(AppData(currentUserId: uid)) { try? Store.writePrivate(raw, to: Store.fileURL) }
+        }
         try await refreshWorkspaces()
         await sync()
     }
 
-    /// Replaces local data with the shared workspace. A backup of the local data is written first.
+    /// Switches to a shared workspace. The current workspace is saved to its own file first, and
+    /// the target is loaded from its file if it was opened before (otherwise pulled from the server).
     func join(_ ws: CloudWorkspace) async throws {
         guard let store, let uid = client.session?.userId else { return }
-        backupLocal()
-        applyingRemote = true
-        var fresh = AppData(currentUserId: uid)
-        fresh.workspaceName = ws.name
-        fresh.reminders = store.data.reminders
-        store.data = fresh
-        store.selection = .home
-        applyingRemote = false
+        guard ws.id != workspaceId else { return }
+        store.saveNow()
+        saveState()
         workspaceId = ws.id
         myRole = ws.role
+        team = []
+        online = []
         cursor = 0
         lastSynced = [:]
         keys = [:]
         keyVersion = 0
-        saveState()
+        loadState()
+        var fresh = AppData(currentUserId: uid)
+        fresh.workspaceName = ws.name
+        store.replaceData(Store.load(Store.fileURL(for: ws.id)) ?? fresh)
         await sync()
     }
 
+    /// Back to the local workspace (this Mac only). The shared workspace's file stays for next time.
     func disconnect() {
+        if let store, workspaceId != nil {
+            store.saveNow()
+            saveState()
+        }
         workspaceId = nil
         team = []
         online = []
@@ -200,6 +213,9 @@ final class CloudSync {
         lastSynced = [:]
         keys = [:]
         keyVersion = 0
+        if let store {
+            store.replaceData(Store.load(Store.fileURL) ?? AppData(currentUserId: store.data.currentUserId))
+        }
     }
 
     private func backupLocal() {

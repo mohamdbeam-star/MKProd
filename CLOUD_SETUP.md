@@ -79,6 +79,12 @@ The server enforces workspace roles. Order approvals follow each entity's approv
 - **Without it:** an admin chooses **Reset password**, which gives a one-time temporary password. You get new encryption keys, and teammates' apps re-share the workspace key automatically.
 - **If you're the only owner and lose both** your password and recovery code, the encrypted server copy can't be decrypted (by design). Your Mac still holds a full local copy.
 
+## Workspaces on the Mac
+
+The Mac app keeps **one file per workspace** (`~/Library/Application Support/MKProd/workspace-<id>.json`) plus `workspace.json` for the local, this-Mac-only workspace. The switcher at the top of the sidebar moves between them without losing anything; **Local (this Mac only)** is always available. "Publish this workspace" (Settings → Cloud & Team) turns the local workspace into a shared one.
+
+If you used an older version that replaced the local data when you opened a shared workspace, the first launch of this version restores the local workspace from the backup made at that time (`backup-<timestamp>.json` in the same folder; the files stay there).
+
 ## How sync behaves
 
 - Every object (task, doc, budget, order…) is one row in D1 with a change counter. Clients pull everything after their last counter, then push what changed.
