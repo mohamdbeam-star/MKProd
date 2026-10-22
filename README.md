@@ -10,7 +10,7 @@ It's an original implementation: project management (spaces, lists, tasks, docs,
 
 ## Install
 
-- **Mac:** [Releases → MK Prod for Mac](https://github.com/mohamdbeam-star/MKProd/releases): open the `.dmg`, drag MK Prod to Applications. First launch: System Settings → Privacy & Security → **Open Anyway** (the app is not notarized with Apple). Universal (Apple Silicon + Intel), macOS 14+, Liquid Glass on macOS 26.
+- **Mac:** [Releases → MK Prod for Mac](https://github.com/mohamdbeam-star/MKProd/releases): open the `.dmg`, drag MK Prod to Applications. First launch: macOS says it "could not verify MK Prod is free of malware" because the build is not yet notarized with Apple: click Done, then System Settings → Privacy & Security → **Open Anyway** (once per install). See [MAC_SIGNING.md](MAC_SIGNING.md) to remove the warning with an Apple Developer account. Universal (Apple Silicon + Intel), macOS 14+, Liquid Glass on macOS 26.
 - **Windows:** [Releases → MK Prod for Windows](https://github.com/mohamdbeam-star/MKProd/releases): per-user setup or portable `.exe`, no admin rights. See [WINDOWS.md](WINDOWS.md).
 - **Android:** [Releases → MK Prod for Android](https://github.com/mohamdbeam-star/MKProd/releases): `.apk` for Android 7+, phones, tablets and foldables. See [ANDROID.md](ANDROID.md).
 - **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar. Signed-in people find all downloads under **Get the apps** in the sidebar (Mac: Settings → Cloud & Team).

@@ -25,8 +25,42 @@ jobs:
           sudo xcode-select -s "$XC"
           xcodebuild -version
           swift --version
+      # With an Apple Developer ID certificate in the secrets, the app is signed with it and
+      # notarized, so macOS opens it without the "could not verify" warning. Without the secrets
+      # the build is ad-hoc signed (first launch needs Privacy & Security → Open Anyway).
+      - name: Import Developer ID certificate
+        id: cert
+        env:
+          CERT_B64: ${{ secrets.MAC_CERT_P12_B64 }}
+          CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_B64" ]; then echo "signing=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p temp "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p temp "$KEYCHAIN"
+          echo "$CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k temp "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+          ID=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+          echo "signing=true" >> "$GITHUB_OUTPUT"
       - name: Build app
+        env:
+          SIGN_IDENTITY: ${{ steps.cert.outputs.identity }}
         run: UNIVERSAL=1 BUILD_NUMBER=${{ github.run_number }} ./build_app.sh
+      - name: Notarize
+        if: steps.cert.outputs.signing == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent "MK Prod.app" notarize.zip
+          xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "MK Prod.app"
+          spctl -a -vv "MK Prod.app"
       - name: Read version
         id: v
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
@@ -37,6 +71,11 @@ jobs:
           cp -R "MK Prod.app" dist/dmg/
           ln -s /Applications dist/dmg/Applications
           hdiutil create -volname "MK Prod" -srcfolder dist/dmg -ov -format UDZO "dist/MK-Prod-$V-mac.dmg"
+          if [ "${{ steps.cert.outputs.signing }}" = "true" ]; then
+            codesign --force --sign "${{ steps.cert.outputs.identity }}" "dist/MK-Prod-$V-mac.dmg"
+            xcrun notarytool submit "dist/MK-Prod-$V-mac.dmg" --apple-id "${{ secrets.APPLE_ID }}" --team-id "${{ secrets.APPLE_TEAM_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}" --wait
+            xcrun stapler staple "dist/MK-Prod-$V-mac.dmg"
+          fi
           ditto -c -k --keepParent "MK Prod.app" "dist/MK-Prod-$V-mac.zip"
           ls -la dist
           lipo -info "MK Prod.app/Contents/MacOS/MKProd"
@@ -48,7 +87,7 @@ jobs:
           body: |
             **Install:** open `MK-Prod-${{ steps.v.outputs.version }}-mac.dmg` and drag **MK Prod** to **Applications**. Universal build (Apple Silicon and Intel), macOS 14 or newer; Liquid Glass design on macOS 26.
 
-            **First launch:** the app is not notarized with Apple, so macOS says it "cannot verify the developer". Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to MK Prod (or right-click the app → Open). Once.
+            ${{ steps.cert.outputs.signing == 'true' && 'Signed and notarized with Apple: opens like any other app.' || '**First launch:** this build is not notarized with Apple, so macOS says it "could not verify MK Prod is free of malware". Click Done, then open **System Settings → Privacy & Security** and click **Open Anyway** next to MK Prod. Once per install.' }}
 
             The `.zip` is the same app for people who prefer it.
           files: |
