@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite build && wrangler dev",
     "build": "tsc -b && vite build",
-    "deploy": "npm run build && (wrangler r2 bucket create mkprod-files >/dev/null 2>&1 || true) && wrangler d1 migrations apply mkprod --remote && wrangler deploy",
+    "deploy": "npm run build && node scripts/deploy.mjs",
     "db:local": "wrangler d1 migrations apply mkprod --local",
     "types": "wrangler types"
   },
