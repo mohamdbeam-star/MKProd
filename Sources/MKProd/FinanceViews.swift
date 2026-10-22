@@ -208,7 +208,7 @@ struct BudgetsView: View {
         p.allowedContentTypes = [.commaSeparatedText]
         p.message = "CSV columns: Entity, Year, Category, Line Item, Allocated, Notes"
         guard p.runModal() == .OK, let url = p.url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        let rows = ClickUpImporter.parseCSV(text).dropFirst()
+        let rows = CSVTaskImporter.parseCSV(text).dropFirst()
         var count = 0
         for r in rows where r.count >= 5 {
             let ename = r[0].trimmingCharacters(in: .whitespaces)

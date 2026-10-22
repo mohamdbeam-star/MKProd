@@ -34,7 +34,7 @@ struct MKProdApp: App {
                 Button("Export Workspace (JSON)…") { exportJSON() }
                 Button("Import Workspace (JSON)…") { importJSON() }
                 Button("Export Tasks (CSV)…") { exportCSV() }
-                Button("Import from ClickUp (CSV)…") { importClickUp() }
+                Button("Import tasks from CSV…") { importTasksCSV() }
             }
             CommandMenu("Go") {
                 Button("Home") { store.selection = .home }.keyboardShortcut("1")
@@ -83,14 +83,14 @@ struct MKProdApp: App {
         }
     }
 
-    private func importClickUp() {
+    private func importTasksCSV() {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.commaSeparatedText]
-        p.message = "Choose a CSV exported from ClickUp (Settings → Import/Export → Export)."
+        p.message = "Choose a CSV export of tasks (columns such as Space, Folder, List, Task Name, Status, Assignees, Due Date)."
         if p.runModal() == .OK, let url = p.url {
             do {
-                let n = try ClickUpImporter.importFile(url, into: store)
-                store.lastError = "Imported \(n) task(s) from ClickUp."
+                let n = try CSVTaskImporter.importFile(url, into: store)
+                store.lastError = "Imported \(n) task(s) from the CSV file."
             } catch { store.lastError = "Import failed: \(error.localizedDescription)" }
         }
     }

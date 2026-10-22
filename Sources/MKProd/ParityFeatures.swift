@@ -370,11 +370,11 @@ struct MenuBarContent: View {
     }
 }
 
-// MARK: - ClickUp CSV import
+// MARK: - CSV task import
 
-/// Imports a ClickUp "Export to CSV" file: spaces, folders, lists, statuses, assignees,
+/// Imports a task-management CSV export (Space / Folder / List / Task columns): spaces, folders, lists, statuses, assignees,
 /// tags, dates, estimates and subtasks are recreated by name.
-enum ClickUpImporter {
+enum CSVTaskImporter {
     static func parseCSV(_ text: String) -> [[String]] {
         var rows: [[String]] = []
         var row: [String] = []
@@ -436,13 +436,13 @@ enum ClickUpImporter {
             return ""
         }
         var d = store.data
-        var byClickUpId: [String: UUID] = [:]
+        var bySourceId: [String: UUID] = [:]
         var parentLinks: [(UUID, String)] = []
         var count = 0
         for r in rows.dropFirst() {
             let title = v(r, "task name", "name")
             guard !title.isEmpty else { continue }
-            let spaceName = v(r, "space name").isEmpty ? "Imported from ClickUp" : v(r, "space name")
+            let spaceName = v(r, "space name").isEmpty ? "Imported from CSV" : v(r, "space name")
             let listName = v(r, "list name").isEmpty ? "Imported" : v(r, "list name")
             let folderName = v(r, "folder name")
 
@@ -494,17 +494,17 @@ enum ClickUpImporter {
                 }
             }
             if d.spaces[spaceIdx!].statuses.first(where: { $0.id == t.statusId })?.kind == .done { t.completedAt = t.created }
-            t.activity = [ActivityItem(text: "Imported from ClickUp")]
+            t.activity = [ActivityItem(text: "Imported from CSV")]
             t.order = Double(d.tasks.count)
             let cuId = v(r, "task id")
-            if !cuId.isEmpty { byClickUpId[cuId] = t.id }
+            if !cuId.isEmpty { bySourceId[cuId] = t.id }
             let parent = v(r, "parent id")
             if !parent.isEmpty && parent.lowercased() != "null" { parentLinks.append((t.id, parent)) }
             d.tasks.append(t)
             count += 1
         }
         for (child, parent) in parentLinks {
-            if let p = byClickUpId[parent], let i = d.tasks.firstIndex(where: { $0.id == child }) { d.tasks[i].parentId = p }
+            if let p = bySourceId[parent], let i = d.tasks.firstIndex(where: { $0.id == child }) { d.tasks[i].parentId = p }
         }
         store.data = d
         return count

@@ -6,7 +6,7 @@ A team workspace for tasks, budgets, orders and contracts, in three forms that s
 - **Website** at https://mkprod.mohamd-beam.workers.dev (same glass design)
 - **Windows app**: the website installed as an app from Edge or Chrome, per user, no admin rights: **[WINDOWS.md](WINDOWS.md)**
 
-It's an original implementation with a ClickUp-style feature set, no ClickUp code, assets or branding.
+It's an original implementation: project management (spaces, lists, tasks, docs, chat, goals, time tracking) and procurement (budgets, approvals, orders, catalog, contracts) in one encrypted workspace.
 
 ## Install
 
@@ -44,7 +44,7 @@ Requirements: macOS 14+ and the Xcode Command Line Tools. Without full Xcode, th
 | Time tracking | Global timer (toolbar, ⇧⌘T), per-task timer, manual entries, billable flag, weekly timesheets |
 | Automations | When (created / status / priority / assignee / tag / due date passed) → Then (status, priority, assign, tag, move, comment, set due, archive), scoped per Space |
 | Templates | Save any task (with subtasks) as a template; instantiate into any list |
-| Other | ⌘K command palette and global search, JSON backup/restore, CSV export, macOS notifications for reminders, settings for people/statuses/fields |
+| Other | ⌘K command palette and global search, JSON backup/restore, CSV import and export of tasks, macOS notifications for reminders, settings for people/statuses/fields |
 
 ## Website, team sync & collaboration
 
@@ -87,7 +87,7 @@ Available in both the Mac app and the website:
 - **Encrypted file attachments** on tasks (website upload/download; Mac shows them by name)
 - **Weekly summary email** every Monday
 
-See **[CLICKUP_PARITY.md](CLICKUP_PARITY.md)** for the full feature checklist.
+See **[FEATURES.md](FEATURES.md)** for the full feature checklist.
 
 ## Tests
 
