@@ -31,6 +31,8 @@ class HttpError extends Error {
 const SESSION_DAYS = 30;
 const PULL_LIMIT = 500;
 const MAX_BODY = 4 * 1024 * 1024;
+/** One synced object (a task with its comments, a doc…). D1 rows are capped at 1 MB anyway. */
+const MAX_RECORD = 900 * 1024;
 const COOKIE = 'mkp_s';
 const COLORS = ['#7B68EE', '#5B8DEF', '#3DBE7A', '#F0A33A', '#E5484D', '#D6409F', '#12B5CB', '#8E5CF7'];
 
@@ -218,11 +220,14 @@ async function login(req: Request, env: Env): Promise<Response> {
     await env.DB.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(email, new Date().toISOString()).run();
     throw new HttpError(401, 'Invalid email or password');
   }
+  // Housekeeping on every successful login: expired sessions and stale throttling rows.
+  // login_failures and rate_events hold email addresses and IPs, so they are not kept beyond their use.
   await env.DB.batch([
-    env.DB.prepare('DELETE FROM login_failures WHERE email = ?').bind(email),
+    env.DB.prepare('DELETE FROM login_failures WHERE email = ? OR at < ?').bind(email, new Date(Date.now() - 86400_000).toISOString()),
     env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(new Date().toISOString()),
     env.DB.prepare('DELETE FROM rate_events WHERE at < ?').bind(new Date(Date.now() - 86400_000).toISOString()),
     env.DB.prepare('DELETE FROM notify_log WHERE sent_at < ?').bind(new Date(Date.now() - 180 * 86400_000).toISOString()),
+    env.DB.prepare('DELETE FROM presence WHERE last_seen < ?').bind(new Date(Date.now() - 7 * 86400_000).toISOString()),
   ]);
   const token = await newSession(env, u.id);
   // Browsers get only the HttpOnly cookie; native apps ask for the token to keep in their keychain.
@@ -442,7 +447,9 @@ async function sync(req: Request, env: Env, wsId: string, user: User, role: Role
         // Only the current key version, so members added after a rotation can read every record.
         if (d.v !== keyVersion) throw new HttpError(409, 'Encryption key changed; sync and try again', { keyVersion });
       }
-      return { k: r.kind, i: r.id.toUpperCase(), d: r.deleted ? '{}' : JSON.stringify(r.data ?? {}), x: r.deleted ? 1 : 0 };
+      const d = r.deleted ? '{}' : JSON.stringify(r.data ?? {});
+      if (d.length > MAX_RECORD) throw new HttpError(413, 'One item is too large to sync (over 900 KB). Attach big files by link instead.');
+      return { k: r.kind, i: r.id.toUpperCase(), d, x: r.deleted ? 1 : 0 };
     });
     // One transaction: assign consecutive sequence numbers and upsert every row.
     await env.DB.batch([

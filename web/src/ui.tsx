@@ -142,7 +142,8 @@ export const CHART_COLORS = ['#7B68EE', '#3DBE7A', '#5B8DEF', '#F0A33A', '#E5484
 
 /** Minimal Markdown for docs, descriptions and comments (text is escaped first). */
 export function Markdown({ text }: { text: string }) {
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Quotes too: a link URL ends up inside href="…" and must not be able to close the attribute.
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const inline = (s: string) => esc(s)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
