@@ -135,12 +135,7 @@ struct HomeView: View {
 
     private var recents: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(store.data.tasks.filter { !$0.archived }.sorted { $0.updated > $1.updated }.prefix(7)) { t in miniRow(t) }
-            Divider()
-            ForEach(store.data.docs.sorted { $0.updated > $1.updated }.prefix(3)) { d in
-                Label(d.title, systemImage: d.icon).font(.callout)
-                    .onTapGesture { store.selection = .doc(d.id) }
-            }
+            ForEach(store.data.tasks.filter { !$0.archived }.sorted { $0.updated > $1.updated }.prefix(10)) { t in miniRow(t) }
         }
     }
 
@@ -270,7 +265,7 @@ struct CommandPalette: View {
         var out: [Hit] = []
         let nav: [(String, String, SidebarItem)] = [
             ("Home", "house", .home), ("Inbox", "tray", .inbox), ("My Tasks", "person", .myTasks), ("Everything", "square.stack.3d.up", .everything),
-            ("Docs", "doc.text", .docs), ("Whiteboards", "scribble.variable", .whiteboards), ("Goals", "target", .goals), ("Dashboards", "chart.bar", .dashboards),
+            ("Whiteboards", "scribble.variable", .whiteboards), ("Goals", "target", .goals), ("Dashboards", "chart.bar", .dashboards),
             ("Timesheets", "clock", .timesheet), ("Automations", "bolt", .automations), ("Templates", "square.on.square.dashed", .templates),
         ]
         for n in nav where q.isEmpty || n.0.localizedCaseInsensitiveContains(q) {
@@ -289,8 +284,8 @@ struct CommandPalette: View {
                 store.openTaskId = t.id
             })
         }
-        for d in store.data.docs where d.title.localizedCaseInsensitiveContains(q) || d.body.localizedCaseInsensitiveContains(q) {
-            out.append(Hit(id: d.id.uuidString, icon: d.icon, title: d.title, subtitle: "Doc") { store.selection = .doc(d.id) })
+        for w in store.data.whiteboards where w.name.localizedCaseInsensitiveContains(q) {
+            out.append(Hit(id: w.id.uuidString, icon: "scribble.variable", title: w.name, subtitle: "Whiteboard") { store.selection = .whiteboard(w.id) })
         }
         for g in store.data.goals where g.name.localizedCaseInsensitiveContains(q) {
             out.append(Hit(id: g.id.uuidString, icon: "target", title: g.name, subtitle: "Goal") { store.selection = .goals })

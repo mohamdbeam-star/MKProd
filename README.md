@@ -6,7 +6,7 @@ A team workspace for tasks, budgets, orders and contracts, in three forms that s
 - **Website** at https://mkprod.mohamd-beam.workers.dev (same glass design)
 - **Windows app** (`.exe`, per user, no admin rights) and **Android app** (`.apk`, foldable-aware): **[WINDOWS.md](WINDOWS.md)**, **[ANDROID.md](ANDROID.md)**
 
-It's an original implementation: project management (spaces, lists, tasks, docs, chat, goals, time tracking) and procurement (budgets, approvals, orders, catalog, contracts) in one encrypted workspace.
+It's an original implementation: project management (spaces, lists, tasks, whiteboards, chat, goals, time tracking) and procurement (budgets, approvals, orders, catalog, contracts) in one encrypted workspace.
 
 ## Install
 
@@ -15,7 +15,7 @@ It's an original implementation: project management (spaces, lists, tasks, docs,
 - **Android:** [Releases → MK Prod for Android](https://github.com/mohamdbeam-star/MKProd/releases): `.apk` for Android 7+, phones, tablets and foldables. See [ANDROID.md](ANDROID.md).
 - **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar. Signed-in people find all downloads under **Get the apps** in the sidebar (Mac: Settings → Cloud & Team).
 
-**One version number for everything.** The `VERSION` file at the repository root is the version of the website, the Mac, Windows and Android apps. To publish an update run `scripts/release.sh 1.2.0` (or `patch` / `minor` / `major`): it bumps the number, commits and pushes, and GitHub Actions then rebuilds the three installers under the new number (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) and deploys the website (`deploy.yml`, once the Cloudflare secrets from [CLOUD_SETUP.md](CLOUD_SETUP.md) are set). The website shows its version at the bottom of the sidebar; the Windows and Android apps display the website, so they pick the update up by themselves and show an "Update now" bar when a newer build is live.
+**One version number for everything.** The `VERSION` file at the repository root is the version of the website, the Mac, Windows and Android apps. To publish an update run `scripts/release.sh 1.2.0` (or `patch` / `minor` / `major`): it bumps the number, commits and pushes, and GitHub Actions then rebuilds the three installers under the new number (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) and deploys the website (`deploy.yml`, once the Cloudflare secrets from [CLOUD_SETUP.md](CLOUD_SETUP.md) are set). The website shows its version at the bottom of the sidebar; the Windows and Android apps display the website, so they pick the update up by themselves and show an "Update now" bar when a newer build is live. The Mac app checks the same version file and, once the matching release is on GitHub, shows **Update to x.y.z** at the bottom of its sidebar; one click downloads it, replaces the app and relaunches.
 
 ## Build & run from source
 
@@ -37,8 +37,7 @@ Requirements: macOS 14+ and the Xcode Command Line Tools. Without full Xcode, th
 | Filtering | Search, assignee, priority, tag, show closed, overdue only, "Me mode"; group by status/priority/assignee/due/list; sort options |
 | Home | My Work (overdue/today/next/unscheduled), reminders, recents, notepad, 7-day agenda, goals |
 | Inbox | Notifications for assignments, mentions, approvals, reminders; read/clear/restore. Synced across all your devices, private to you |
-| Docs | Nested pages, Markdown editor with live preview/split view, templates, export to `.md`, convert checkboxes to tasks |
-| Whiteboards | Stickies, text, shapes, connectors, colors, resize, zoom, convert to task |
+| Whiteboards | Stickies, text, shapes, connectors, colors, resize, zoom, convert to task; the same boards on Mac, website, Windows and Android |
 | Chat | Channels, per-Space channels, post as any member, create task from message |
 | Goals | Folders, owners, due dates; number, currency, true/false and task-linked targets |
 | Portfolio | Every list as a project: progress vs schedule, health, owners, overdue, timeline |
@@ -82,8 +81,6 @@ Available in both the Mac app and the website:
 - **Shopping catalog** with a cart, plus item requests that need approval
 - **Contracts**, flagged active, expiring (within 60 days), expired or renewing
 - **Savings**
-- **Alerts**: over budget, budget lines ≥90% used, expiring contracts, late deliveries, approvals waiting
-- **Analytics**: executive overview, year over year, budget variance, spend analysis (with price variance), order time
 - **Reports**: Excel downloads on the website, CSV and a PDF executive report in the Mac app
 - **Bulk import**: budgets, the shopping catalog and contracts each have one **Import / Export** button: download the template, fill it in, upload it (existing rows are updated, new ones added), or export everything. Single entries are still added one by one with **+ New …**
 - **Audit log** of every finance action

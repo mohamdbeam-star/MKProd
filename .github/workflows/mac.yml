@@ -89,7 +89,7 @@ jobs:
 
             ${{ steps.cert.outputs.signing == 'true' && 'Signed and notarized with Apple: opens like any other app.' || '**First launch:** this build is not notarized with Apple, so macOS says it "could not verify MK Prod is free of malware". Click Done, then open **System Settings → Privacy & Security** and click **Open Anyway** next to MK Prod. Once per install.' }}
 
-            The `.zip` is the same app for people who prefer it.
+            The `.zip` is the same app for people who prefer it (the app's built-in **Update to …** button downloads it).
           files: |
             dist/MK-Prod-*-mac.dmg
             dist/MK-Prod-*-mac.zip

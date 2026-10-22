@@ -40,6 +40,12 @@ export interface Task {
 }
 
 export interface Doc { id: ID; parentId?: ID; spaceId?: ID; title: string; body: string; icon: string; created: string; updated: string; favorite: boolean }
+
+/** Whiteboards: same shape as the Mac app's `Whiteboard` / `BoardItem` / `BoardConnector`, so one board is edited from every platform. */
+export type BoardItemKind = 'sticky' | 'text' | 'rectangle' | 'ellipse';
+export interface BoardItem { id: ID; kind: BoardItemKind; text: string; x: number; y: number; width: number; height: number; colorHex: string }
+export interface BoardConnector { id: ID; from: ID; to: ID }
+export interface Whiteboard { id: ID; name: string; items: BoardItem[]; connectors: BoardConnector[] }
 export interface Channel { id: ID; name: string; spaceId?: ID }
 export interface Message { id: ID; channelId: ID; authorId: ID; text: string; date: string }
 export interface GoalTarget { id: ID; name: string; kind: 'number' | 'boolean' | 'currency' | 'tasks'; start: number; target: number; current: number; taskIds: ID[] }
@@ -96,7 +102,7 @@ export const FINANCE_SETTINGS_ID = 'F1A2C3E4-0000-4000-8000-000000000001';
 
 /** Synced collections: record kind → object type. Must match SyncKind.all in CloudSync.swift. */
 export interface Collections {
-  spaces: Space; folders: Folder; lists: TaskList; tasks: Task; docs: Doc; whiteboards: { id: ID; name: string }
+  spaces: Space; folders: Folder; lists: TaskList; tasks: Task; docs: Doc; whiteboards: Whiteboard
   channels: Channel; messages: Message; goals: Goal; timeEntries: TimeEntry; automations: { id: ID; name: string }
   dashboards: { id: ID; name: string }; templates: { id: ID; name: string }
   entities: FinEntity; budgets: Budget; orders: Order; savings: Saving; contracts: Contract

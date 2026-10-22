@@ -399,7 +399,7 @@ export function DirectoryPage() {
     ...engine.list('docs').map((d) => ({ id: d.id, type: 'Doc', icon: '📝', name: d.title || 'Untitled', where: d.parentId ? engine.get('docs', d.parentId)?.title ?? '' : spaceName(d.spaceId) || 'Docs', items: d.body.length ? d.body.split(/\s+/).length : 0, updated: d.updated, open: 'docs/' + d.id })),
     ...engine.list('channels').map((c) => ({ id: c.id, type: 'Chat channel', icon: '💬', name: '#' + c.name, where: spaceName(c.spaceId) || 'Workspace', items: engine.list('messages').filter((m) => m.channelId === c.id).length, open: 'chat/' + c.id })),
     ...engine.list('goals').map((g) => ({ id: g.id, type: 'Goal', icon: '🎯', name: g.name, where: g.folder, items: g.targets.length, open: 'goals' })),
-    ...engine.list('whiteboards').map((w) => ({ id: w.id, type: 'Whiteboard', icon: '🧩', name: w.name, where: 'Mac app', items: 0 })),
+    ...engine.list('whiteboards').map((w) => ({ id: w.id, type: 'Whiteboard', icon: '🧩', name: w.name, where: 'Whiteboards', items: w.items?.length ?? 0 })),
     ...engine.list('dashboards').map((d) => ({ id: d.id, type: 'Dashboard', icon: '📊', name: d.name, where: 'Mac app', items: 0 })),
   ];
   const types = [...new Set(rows.map((r) => r.type))].sort();

@@ -6,10 +6,11 @@ import { Finance } from './finance';
 import { APP_BUILD, APP_VERSION, reloadToLatest, useUpdateAvailable } from './version';
 import { AppCtx, Avatars, Modal, useApp } from './ui';
 import { HomePage, InboxPage, TaskDrawer, TasksPage, deleteFolder, deleteList, deleteSpace } from './pages/Tasks';
-import { ChatPage, DocsPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
+import { ChatPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
+import { WhiteboardsPage } from './pages/Whiteboards';
 import { DirectoryPage, FieldsEditor, PortfolioPage, ResourcesPage } from './pages/Advanced';
 import {
-  AlertsPage, AnalyticsPage, AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceOverview, FinanceSettingsPage,
+  AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceSettingsPage,
   OrdersPage, ReportsPage, SavingsPage,
 } from './pages/Finance';
 import { SharePage } from './pages/Share';
@@ -366,7 +367,7 @@ function Page({ route }: { route: string }) {
     case 'mine': return <TasksPage scope={{ kind: 'mine' }} />;
     case 'everything': return <TasksPage scope={{ kind: 'everything' }} />;
     case 'space': case 'folder': case 'list': return <TasksPage key={route} scope={{ kind: p, id }} />;
-    case 'docs': return <DocsPage id={id} />;
+    case 'whiteboards': return <WhiteboardsPage id={id} />;
     case 'chat': return <ChatPage id={id} />;
     case 'goals': return <GoalsPage />;
     case 'portfolio': return <PortfolioPage />;
@@ -375,15 +376,12 @@ function Page({ route }: { route: string }) {
     case 'time': return <TimesheetPage />;
     case 'trash': return <TrashPage />;
     case 'team': return <TeamPage />;
-    case 'finance': return <FinanceOverview />;
-    case 'alerts': return <AlertsPage />;
     case 'budgets': return <BudgetsPage />;
     case 'orders': return <OrdersPage openId={id} />;
     case 'approvals': return <OrdersPage approvalsOnly openId={id} />;
     case 'catalog': return <CatalogPage />;
     case 'contracts': return <ContractsPage />;
     case 'savings': return <SavingsPage />;
-    case 'analytics': return <AnalyticsPage />;
     case 'reports': return <ReportsPage />;
     case 'audit': return <AuditPage />;
     case 'fsettings': return <FinanceSettingsPage />;
@@ -450,7 +448,6 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
   }, []);
   const unread = engine.inbox.filter((n) => !n.read).length;
   const approvals = engine.list('orders').filter((o) => fin.canApprove(o)).length;
-  const alerts = fin.alerts().filter((a) => a.severity > 0).length;
   const others = engine.presence.filter((p) => p.user_id !== engine.me).map((p) => p.user_id);
   const st = engine.status;
   const addSpace = () => {
@@ -515,7 +512,7 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
             </div>
           ))}
           <h4>Workspace</h4>
-          {nav('docs', '📝', 'Docs')}
+          {nav('whiteboards', '🧩', 'Whiteboards')}
           {nav('chat', '💬', 'Chat')}
           {nav('goals', '🎯', 'Goals')}
           {nav('portfolio', '🗂', 'Portfolio')}
@@ -524,15 +521,12 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
           {nav('directory', '📚', 'Content directory')}
           {nav('trash', '🗑', 'Trash')}
           <h4>Budget & procurement</h4>
-          {nav('finance', '📊', 'Overview')}
-          {nav('alerts', '🔔', 'Alerts', alerts)}
           {nav('budgets', '💰', 'Budgets')}
           {nav('orders', '📦', 'Orders & expenses')}
           {nav('approvals', '✅', 'My approvals', approvals)}
           {nav('catalog', '🛒', 'Shopping catalog')}
           {nav('contracts', '📄', 'Contracts')}
           {nav('savings', '💵', 'Savings')}
-          {nav('analytics', '📈', 'Analytics')}
           {nav('reports', '📑', 'Reports')}
           {nav('audit', '📜', 'Audit log')}
           {nav('fsettings', '⚙️', 'Finance settings')}
@@ -584,9 +578,9 @@ function title(route: string, engine: SyncEngine) {
   if (p === 'list') return engine.get('lists', id)?.name ?? 'List';
   if (p === 'space') return engine.get('spaces', id)?.name ?? 'Space';
   if (p === 'folder') return engine.get('folders', id)?.name ?? 'Folder';
-  return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', docs: 'Docs', chat: 'Chat', goals: 'Goals', portfolio: 'Portfolio', resources: 'Resource management', directory: 'Content directory', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
-    finance: 'Finance overview', alerts: 'Alerts', budgets: 'Budgets', orders: 'Orders & expenses', approvals: 'My approvals', catalog: 'Shopping catalog', contracts: 'Contracts',
-    savings: 'Savings', analytics: 'Analytics', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings', apps: 'Get the apps' } as Record<string, string>)[p] ?? 'MK Prod';
+  return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', whiteboards: 'Whiteboards', chat: 'Chat', goals: 'Goals', portfolio: 'Portfolio', resources: 'Resource management', directory: 'Content directory', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
+    budgets: 'Budgets', orders: 'Orders & expenses', approvals: 'My approvals', catalog: 'Shopping catalog', contracts: 'Contracts',
+    savings: 'Savings', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings', apps: 'Get the apps' } as Record<string, string>)[p] ?? 'MK Prod';
 }
 
 function SearchModal({ onClose, onTask }: { onClose: () => void; onTask: (id: ID) => void }) {
@@ -595,7 +589,7 @@ function SearchModal({ onClose, onTask }: { onClose: () => void; onTask: (id: ID
   const s = q.toLowerCase();
   const hits = !s ? [] : [
     ...engine.list('tasks').filter((t) => !t.archived && (t.title + ' ' + t.details).toLowerCase().includes(s)).slice(0, 12).map((t) => ({ k: t.id, icon: '✓', label: t.title, act: () => onTask(t.id) })),
-    ...engine.list('docs').filter((d) => (d.title + ' ' + d.body).toLowerCase().includes(s)).slice(0, 6).map((d) => ({ k: d.id, icon: '📝', label: d.title, act: () => { go('docs/' + d.id); onClose(); } })),
+    ...engine.list('whiteboards').filter((w) => w.name.toLowerCase().includes(s)).slice(0, 4).map((w) => ({ k: w.id, icon: '🧩', label: w.name, act: () => { go('whiteboards/' + w.id); onClose(); } })),
     ...engine.list('orders').filter((o) => `${o.title} ${o.supplier} ${o.poNumber} ${o.number}`.toLowerCase().includes(s)).slice(0, 6).map((o) => ({ k: o.id, icon: '📦', label: `#${o.number} ${o.title}`, act: () => { go('orders/' + o.id); onClose(); } })),
     ...engine.list('contracts').filter((c) => `${c.title} ${c.supplier}`.toLowerCase().includes(s)).slice(0, 4).map((c) => ({ k: c.id, icon: '📄', label: c.title, act: () => { go('contracts'); onClose(); } })),
     ...engine.list('lists').filter((l) => l.name.toLowerCase().includes(s)).slice(0, 4).map((l) => ({ k: l.id, icon: '☰', label: l.name, act: () => { go('list/' + l.id); onClose(); } })),

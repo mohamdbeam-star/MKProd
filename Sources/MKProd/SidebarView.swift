@@ -78,8 +78,7 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Docs & Whiteboards") {
-                row("All Docs", "doc.text", .docs)
+            Section("Whiteboards") {
                 row("Whiteboards", "scribble.variable", .whiteboards)
             }
 
@@ -102,16 +101,6 @@ struct SidebarView: View {
             }
 
             Section("Budget & Procurement") {
-                row("Overview", "chart.pie", .finDashboard)
-                Label {
-                    HStack {
-                        Text("Alerts")
-                        Spacer()
-                        let n = store.financeAlerts.filter { $0.severity > 0 }.count
-                        if n > 0 { Text("\(n)").font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 1).background(Color.orange, in: Capsule()).foregroundStyle(.white) }
-                    }
-                } icon: { Image(systemName: "exclamationmark.triangle") }
-                .tag(SidebarItem.finAlerts)
                 row("Budgets", "banknote", .finBudgets)
                 row("Orders & Expenses", "shippingbox", .finOrders)
                 Label {
@@ -126,7 +115,6 @@ struct SidebarView: View {
                 row("Shopping Catalog", "cart", .finCatalog)
                 row("Contracts", "doc.plaintext", .finContracts)
                 row("Savings", "dollarsign.arrow.circlepath", .finSavings)
-                row("Analytics", "chart.xyaxis.line", .finAnalytics)
                 row("Reports", "doc.richtext", .finReports)
                 row("Audit Log", "list.bullet.clipboard", .finAudit)
                 row("Finance Settings", "slider.horizontal.3", .finSettings)
@@ -154,6 +142,7 @@ struct SidebarView: View {
                     Text(store.data.workspaceName).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                UpdateButton()
                 CloudStatusBadge()
                 SettingsLink { Image(systemName: "gearshape") }.buttonStyle(.plain)
             }

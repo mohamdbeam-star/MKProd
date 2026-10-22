@@ -16,6 +16,7 @@ struct MKProdApp: App {
                     store.requestNotificationPermission()
                     GlobalHotKey.action = { [store] in QuickAddPanel.show(store: store) }
                     GlobalHotKey.register()
+                    Updater.shared.start()
                 }
         }
         .defaultSize(width: 1440, height: 900)
@@ -41,7 +42,7 @@ struct MKProdApp: App {
                 Button("Inbox") { store.selection = .inbox }.keyboardShortcut("2")
                 Button("My Tasks") { store.selection = .myTasks }.keyboardShortcut("3")
                 Button("Everything") { store.selection = .everything }.keyboardShortcut("4")
-                Button("Docs") { store.selection = .docs }.keyboardShortcut("5")
+                Button("Whiteboards") { store.selection = .whiteboards }.keyboardShortcut("5")
                 Button("Goals") { store.selection = .goals }.keyboardShortcut("6")
                 Button("Dashboards") { store.selection = .dashboards }.keyboardShortcut("7")
                 Button("Timesheets") { store.selection = .timesheet }.keyboardShortcut("8")

@@ -15,7 +15,7 @@ Everything below is available in the Mac app and on the website (and therefore i
 - **Content directory:** every space, folder, list, sprint, doc, channel, goal, whiteboard and dashboard in one searchable table with location, size, privacy and last update.
 - **Home:** My work, approvals waiting, reminders, recently updated.
 - **Inbox:** assignments, mentions, approvals, reminders; synced across your devices and private to you.
-- **Docs** (Markdown, nested pages), **Chat** channels, **Goals** with targets, **Time tracking** and timesheets, **Dashboards** and **Automations** (Mac), **Whiteboards** (Mac).
+- **Whiteboards** (stickies, text, boxes, circles, connectors, colours, resize, zoom, convert to task; one board shared by every platform), **Chat** channels, **Goals** with targets, **Time tracking** and timesheets, **Dashboards** and **Automations** (Mac).
 - **Import/export:** CSV task import, JSON backup, Excel exports.
 
 ## Procurement and budgets
@@ -27,7 +27,7 @@ Everything below is available in the Mac app and on the website (and therefore i
 - **Shopping catalog** with cart, item requests, bulk import from Excel/CSV with a template.
 - **One Import / Export button** on Budgets, Shopping catalog and Contracts (website, Windows, Android and Mac): download the template, upload it filled in (matching rows are updated, new ones added, bad rows reported), or export everything. Row-by-row entry stays separate (**+ New …**).
 - **Contracts** (active, expiring, expired, renewing) with reminders 60/30/14/7/1 days before the end.
-- **Savings**, **Alerts**, **Analytics** (overview, year over year, variance, spend, order time), **Reports**, **Audit log**.
+- **Savings**, **Reports**, **Audit log**.
 
 ## Team and security
 
@@ -39,3 +39,7 @@ Everything below is available in the Mac app and on the website (and therefore i
 - Presence (who is online, who has a task open), field-by-field merge of simultaneous edits, offline use.
 
 Details: [README.md](README.md), [CLOUD_SETUP.md](CLOUD_SETUP.md), [SECURITY.md](SECURITY.md), [WINDOWS.md](WINDOWS.md).
+
+## Updates
+
+One version number (`VERSION`) for every platform. The website, Windows and Android apps show an **Update now** bar when a newer build is live; the Mac app shows **Update to x.y.z** in its sidebar once the release is on GitHub and installs it in place.
