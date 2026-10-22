@@ -4,8 +4,16 @@ struct ContentView: View {
     @Environment(Store.self) private var store
 
     var body: some View {
+        if store.cloud.isSignedIn && store.cloud.workspaceId != nil {
+            workspace
+        } else {
+            OnboardingView()
+        }
+    }
+
+    private var workspace: some View {
         @Bindable var store = store
-        NavigationSplitView {
+        return NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 340)
         } detail: {
@@ -109,5 +117,37 @@ struct TimerToolbarButton: View {
                     .help("Start timer")
             }
         }
+    }
+}
+
+
+/// Shown until the person is signed in and has opened a shared workspace. There is no local-only
+/// mode: everything lives in the shared workspace and syncs to every device.
+struct OnboardingView: View {
+    @Environment(Store.self) private var store
+
+    var body: some View {
+        ZStack {
+            MKBackdrop()
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    RoundedRectangle(cornerRadius: 12).fill(LinearGradient(colors: [Color(hex: "#7B68EE"), Color(hex: "#D6409F")], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 44, height: 44).overlay(Text("MK").font(.headline.bold()).foregroundStyle(.white))
+                    VStack(alignment: .leading) {
+                        Text("MK Prod").font(.title2.bold())
+                        Text(store.cloud.isSignedIn ? "Choose the workspace to open." : "Sign in to your team workspace.").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 6)
+                CloudSettingsView()
+                    .frame(maxHeight: 560)
+            }
+            .padding(20)
+            .frame(width: 620)
+            .mkCard(radius: 20)
+            .padding(30)
+        }
+        .frame(minWidth: 760, minHeight: 640)
     }
 }

@@ -79,11 +79,12 @@ The server enforces workspace roles. Order approvals follow each entity's approv
 - **Without it:** an admin chooses **Reset password**, which gives a one-time temporary password. You get new encryption keys, and teammates' apps re-share the workspace key automatically.
 - **If you're the only owner and lose both** your password and recovery code, the encrypted server copy can't be decrypted (by design). Your Mac still holds a full local copy.
 
-## Workspaces on the Mac
+## One shared set of data everywhere
 
-The Mac app keeps **one file per workspace** (`~/Library/Application Support/MKProd/workspace-<id>.json`) plus `workspace.json` for the local, this-Mac-only workspace. The switcher at the top of the sidebar moves between them without losing anything; **Local (this Mac only)** is always available. "Publish this workspace" (Settings → Cloud & Team) turns the local workspace into a shared one.
+There is no local-only mode. Every app signs in to the same account and opens a shared workspace; everything you do is in that workspace and reaches every other device within seconds. Apps keep an encrypted copy on the device so they open instantly and keep working offline; it is a cache of the shared data, and edits made offline are sent as soon as the connection is back.
 
-If you used an older version that replaced the local data when you opened a shared workspace, the first launch of this version restores the local workspace from the backup made at that time (`backup-<timestamp>.json` in the same folder; the files stay there).
+- **Mac:** on first launch the app asks you to sign in, then to open a workspace (or create one / join with an invite code). The switcher at the top of the sidebar moves between your workspaces; each is cached in its own file under `~/Library/Application Support/MKProd/`. If this Mac still has data from the old local-only version, the workspace picker offers to upload it as a new shared workspace once.
+- **Sync cadence:** every 2 seconds while anyone is actively changing things, 6 seconds when quiet, 30 seconds in a background tab; a local edit is sent within a second, and the Mac app syncs immediately when it comes to the front.
 
 ## How sync behaves
 

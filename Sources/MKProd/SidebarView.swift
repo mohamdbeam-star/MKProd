@@ -296,19 +296,11 @@ struct WorkspaceSwitcher: View {
                 if store.cloud.workspaces.isEmpty { Text("None yet") }
             }
             Section {
-                Button {
-                    guard store.cloud.workspaceId != nil else { return }
-                    store.cloud.disconnect()
-                } label: {
-                    if store.cloud.workspaceId == nil { Label("Local (this Mac only)", systemImage: "checkmark") } else { Text("Local (this Mac only)") }
-                }
-            }
-            Section {
-                SettingsLink { Text("Create, join or publish a workspace…") }
+                SettingsLink { Text("Create or join a workspace…") }
             }
         } label: {
             HStack {
-                Image(systemName: store.cloud.workspaceId == nil ? "desktopcomputer" : "building.2")
+                Image(systemName: "building.2")
                 Text(store.data.workspaceName).fontWeight(.semibold).lineLimit(1)
                 Spacer()
                 if switching { ProgressView().controlSize(.mini) } else { Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary) }

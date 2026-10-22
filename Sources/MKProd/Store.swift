@@ -74,10 +74,11 @@ final class Store {
     init() {
         let wsId = Store.defaults.string(forKey: "cloudWorkspaceId").flatMap(UUID.init)
         Store.migrateLayout(currentWorkspace: wsId)
-        if let decoded = Store.load(Store.fileURL(for: wsId)) {
+        // Only a shared workspace's cached copy is ever loaded; with none chosen the app shows the picker.
+        if let wsId, let decoded = Store.load(Store.fileURL(for: wsId)) {
             data = decoded
         } else {
-            data = wsId == nil ? SampleData.make() : AppData(currentUserId: UUID())
+            data = AppData(currentUserId: UUID())
         }
         startTicker()
         cloud.store = self
@@ -128,6 +129,7 @@ final class Store {
     }
 
     func saveNow() {
+        guard cloud.workspaceId != nil else { return } // nothing is kept outside a shared workspace
         do {
             let raw = try Store.encoder.encode(data)
             try Store.writePrivate(raw, to: currentFileURL)

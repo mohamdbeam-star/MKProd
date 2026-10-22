@@ -100,7 +100,7 @@ struct CloudSettingsView: View {
                             .foregroundStyle(.orange)
                     }
                     if cloud.workspaces.isEmpty {
-                        Text("No shared workspaces yet. Publish this one, or enter the invite code an admin gave you.")
+                        Text("No workspaces yet. Create one, or enter the invite code an admin gave you.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     ForEach(cloud.workspaces) { ws in
@@ -113,9 +113,9 @@ struct CloudSettingsView: View {
                             }
                             Spacer()
                             if ws.id == cloud.workspaceId {
-                                Button("Disconnect") { cloud.disconnect() }
+                                Text("Open now").foregroundStyle(.secondary)
                             } else {
-                                Button("Open") { open(ws) }.buttonStyle(.borderedProminent)
+                                Button("Open") { run { try await cloud.join(ws) } }.buttonStyle(.borderedProminent)
                             }
                         }
                     }
@@ -126,11 +126,23 @@ struct CloudSettingsView: View {
                     }
                     HStack {
                         TextField("New workspace name", text: $newWorkspace)
-                        Button("Publish this workspace") {
-                            let n = newWorkspace.isEmpty ? store.data.workspaceName : newWorkspace
-                            run { try await cloud.publishCurrentWorkspace(name: n) }
+                        Button("Create workspace") {
+                            let n = newWorkspace.trimmingCharacters(in: .whitespaces)
+                            run { try await cloud.createWorkspace(name: n.isEmpty ? "My workspace" : n); newWorkspace = "" }
                         }
                         .disabled(busy)
+                    }
+                    if let legacy = cloud.legacyLocalData {
+                        HStack {
+                            Image(systemName: "externaldrive.badge.icloud").foregroundStyle(.orange)
+                            Text("This Mac still has data from the old local-only version (\(legacy.tasks.count) tasks, \(legacy.orders.count) orders).")
+                                .font(.callout)
+                            Spacer()
+                            Button("Upload as a workspace") {
+                                run { try await cloud.uploadLegacyLocalData(name: legacy.workspaceName) }
+                            }
+                            .disabled(busy)
+                        }
                     }
                     Button("Refresh list") { run { try await cloud.refreshWorkspaces() } }.buttonStyle(.link)
                 } header: { Text("3 · Shared workspace") }
@@ -187,21 +199,10 @@ struct CloudSettingsView: View {
         offerToOpen()
     }
 
-    /// After signing in, connect straight away instead of leaving the app signed in but not syncing.
+    /// After signing in: one workspace → open it straight away; several → the list is shown.
     private func offerToOpen() {
-        guard !cloud.isConnected, let ws = cloud.workspaces.first else { return }
-        let others = cloud.workspaces.count > 1 ? " You can switch to your other workspaces here later." : ""
-        if confirm("Open “\(ws.name)” on this Mac?",
-                   "Your Mac will show the team's spaces, lists and tasks and keep them in sync. Your current local data is saved to a backup file first.\(others)",
-                   ok: "Open \(ws.name)") {
-            run { try await cloud.join(ws) }
-        }
-    }
-
-    private func open(_ ws: CloudWorkspace) {
-        if confirm("Open “\(ws.name)”?", "Your current local data is saved to a backup file next to the data file, then replaced by the shared workspace.", ok: "Replace local data and open") {
-            run { try await cloud.join(ws) }
-        }
+        guard !cloud.isConnected, cloud.workspaces.count == 1, let ws = cloud.workspaces.first else { return }
+        run { try await cloud.join(ws) }
     }
 }
 

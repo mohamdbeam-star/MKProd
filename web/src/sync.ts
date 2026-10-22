@@ -157,6 +157,8 @@ export class SyncEngine {
   private again = false;
   private loaded = false;
   private forcePushAll = false;
+  /** Last time something changed here or arrived from a teammate; drives the polling cadence. */
+  private lastActivity = Date.now();
 
   constructor(public session: Session, public workspace: WorkspaceInfo, private onAuthLost: () => void) {
     this.role = workspace.role;
@@ -180,11 +182,14 @@ export class SyncEngine {
     this.loaded = true;
     this.emit();
     await this.sync();
+    // Cadence: 2 s while people are actively changing things (ours or theirs, for a minute),
+    // 6 s when quiet, 30 s in a background tab. Any local edit also syncs within a second.
     const tick = () => {
       this.sync();
-      this.timer = window.setTimeout(tick, document.hidden ? 30_000 : 4_000);
+      const active = Date.now() - this.lastActivity < 60_000;
+      this.timer = window.setTimeout(tick, document.hidden ? 30_000 : active ? 2_000 : 6_000);
     };
-    this.timer = window.setTimeout(tick, 4_000);
+    this.timer = window.setTimeout(tick, 2_000);
     document.addEventListener('visibilitychange', this.onVisible);
   }
 
@@ -264,6 +269,7 @@ export class SyncEngine {
   }
 
   private changed() {
+    this.lastActivity = Date.now();
     this.emit();
     this.persist();
     clearTimeout(this.debounce);
@@ -476,6 +482,7 @@ export class SyncEngine {
   /** Applies pulled rows. Returns false (applying nothing) if some rows can't be decrypted yet. */
   private async apply(rows: { kind: Kind; id: ID; deleted: boolean; data: any }[]): Promise<boolean> {
     if (!rows.length) return true;
+    this.lastActivity = Date.now();
     const plain: { kind: Kind; id: ID; deleted: boolean; data: any }[] = [];
     for (const r of rows) {
       if (!KINDS.includes(r.kind)) continue;

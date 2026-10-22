@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import SwiftUI
 import CryptoKit
 
@@ -88,16 +89,32 @@ final class CloudSync {
 
     init() {
         let saved = Store.defaults.data(forKey: "cloudServer").flatMap { try? JSONDecoder().decode(CloudConfig.self, from: $0) }
-        let cfg = saved ?? CloudConfig(url: "")
+        // The team's server is known: no set-up step before signing in.
+        let cfg = saved.flatMap { $0.isComplete ? $0 : nil } ?? CloudConfig(url: CloudSync.defaultServer)
         config = cfg
         client = CloudClient(config: cfg)
         workspaceId = Store.defaults.string(forKey: "cloudWorkspaceId").flatMap(UUID.init)
         loadState()
     }
 
+    static let defaultServer = "https://mkprod.mohamd-beam.workers.dev"
+
+    /// Last time something changed here or arrived from a teammate; drives the polling cadence.
+    private var lastActivity = Date()
+    private var lastPoll = Date.distantPast
+
     func start() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncSoon(delay: 0) }
+        // Cadence: 2 s while anyone is actively changing things (for a minute after the last
+        // change), 6 s when quiet. A local edit syncs within a second; coming to the front syncs at once.
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let interval: TimeInterval = Date().timeIntervalSince(self.lastActivity) < 60 ? 2 : 6
+            if Date().timeIntervalSince(self.lastPoll) >= interval { self.lastPoll = Date(); self.syncSoon(delay: 0) }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.syncSoon(delay: 0)
+        }
         syncSoon(delay: 0.5)
         // Signed in but no workspace chosen yet: load the list so Settings can offer it right away.
         if isSignedIn { Task { @MainActor in try? await self.refreshWorkspaces() } }
@@ -105,6 +122,7 @@ final class CloudSync {
 
     func localChanged() {
         guard !applyingRemote, isConnected else { return }
+        lastActivity = Date()
         syncSoon(delay: 1)
     }
 
@@ -169,10 +187,7 @@ final class CloudSync {
         keyVersion = 0
         saveState()
         store.saveNow() // now lives in workspace-<id>.json
-        if wasLocal {
-            // The local workspace moved to the cloud; leave an empty local one behind instead of a duplicate.
-            if let raw = try? Store.encoder.encode(AppData(currentUserId: uid)) { try? Store.writePrivate(raw, to: Store.fileURL) }
-        }
+        _ = wasLocal
         try await refreshWorkspaces()
         await sync()
     }
@@ -213,9 +228,40 @@ final class CloudSync {
         lastSynced = [:]
         keys = [:]
         keyVersion = 0
-        if let store {
-            store.replaceData(Store.load(Store.fileURL) ?? AppData(currentUserId: store.data.currentUserId))
-        }
+        if let store { store.replaceData(AppData(currentUserId: client.session?.userId ?? store.data.currentUserId)) }
+    }
+
+    /// New, empty shared workspace with a first space and list, opened right away.
+    func createWorkspace(name: String) async throws {
+        guard let store, let uid = client.session?.userId else { return }
+        let obj = try await client.call("POST", "/api/workspaces", ["name": name])
+        guard let idString = obj["id"] as? String, let id = UUID(uuidString: idString) else { throw CloudError(message: "Could not create the workspace.") }
+        try await refreshWorkspaces()
+        try await join(CloudWorkspace(id: id, name: name, role: "owner"))
+        var d = store.data
+        d.currentUserId = uid
+        let space = Space(name: "Team")
+        let list = TaskList(spaceId: space.id, name: "Tasks")
+        d.spaces.append(space)
+        d.lists.append(list)
+        store.data = d
+    }
+
+    /// Data left by the old local-only version of the app, if any (workspace.json with content).
+    var legacyLocalData: AppData? {
+        guard let d = Store.load(Store.fileURL), !d.tasks.isEmpty || d.spaces.count > 1 || !d.orders.isEmpty else { return nil }
+        return d
+    }
+
+    /// Uploads the old local-only data as a new shared workspace, once; the file is then renamed.
+    func uploadLegacyLocalData(name: String) async throws {
+        guard let store, let legacy = legacyLocalData else { return }
+        if workspaceId != nil { store.saveNow(); saveState() }
+        workspaceId = nil
+        store.replaceData(legacy)
+        try await publishCurrentWorkspace(name: name)
+        let done = Store.dataDir.appendingPathComponent("workspace-uploaded-\(Int(Date().timeIntervalSince1970)).json")
+        try? FileManager.default.moveItem(at: Store.fileURL, to: done)
     }
 
     private func backupLocal() {
@@ -389,6 +435,7 @@ final class CloudSync {
 
     private func apply(_ rows: [[String: Any]], to store: Store) {
         guard !rows.isEmpty else { return }
+        lastActivity = Date()
         var local = store.data
         var notifications: [() -> Void] = []
         let snapshots = Dictionary(uniqueKeysWithValues: SyncKind.all.map { ($0.name, $0.snapshot(local)) })
