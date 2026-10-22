@@ -189,3 +189,16 @@ export const sealJson = (key: CryptoKey, obj: unknown, aad: string) => seal(key,
 export async function openJson<T = unknown>(key: CryptoKey, sealed: string, aad: string): Promise<T> {
   return JSON.parse(dec.decode(await open(key, sealed, aad))) as T;
 }
+
+// ---------------------------------------------------------------- personal key
+
+/**
+ * A key only this person's devices can derive: ECDH of the own key pair with itself, through
+ * HKDF. It survives password changes (the key pair doesn't change) and is lost on an admin
+ * password reset (new key pair), which only affects the inbox and reminders.
+ */
+export async function personalKey(privateKey: CryptoKey, publicKey: string): Promise<CryptoKey> {
+  const shared = await subtle.deriveBits({ name: 'ECDH', public: await importPublic(publicKey) }, privateKey, 256);
+  const ikm = await subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  return subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('mkprod-v1-personal'), info: enc.encode('personal') }, ikm, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}

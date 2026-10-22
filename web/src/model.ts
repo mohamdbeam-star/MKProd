@@ -44,6 +44,14 @@ export interface GoalTarget { id: ID; name: string; kind: 'number' | 'boolean' |
 export interface Goal { id: ID; name: string; details: string; dueDate?: string; ownerId?: ID; colorHex: string; folder: string; targets: GoalTarget[] }
 export interface TimeEntry { id: ID; taskId?: ID; memberId: ID; note: string; start: string; end?: string; billable: boolean }
 
+/**
+ * Personal records: synced to all of one person's devices, encrypted with that person's own
+ * key (derived from their key pair), so teammates can't read them. Same shapes as Models.swift.
+ * `target` is the web's richer link ("task:<id>", "order:<id>", "chat:<id>"); `taskId` is what the Mac app opens.
+ */
+export interface InboxItem { id: ID; date: string; text: string; taskId?: ID; target?: string; read: boolean; cleared: boolean }
+export interface Reminder { id: ID; title: string; date: string; done: boolean; taskId?: ID; notified: boolean }
+
 // Budget & procurement
 export interface FinEntity { id: ID; name: string; code: string; approvalLevels: string[]; roles: { memberId: ID; role: string }[] }
 export interface BudgetLine { id: ID; name: string; allocated: number; notes: string }
@@ -87,12 +95,16 @@ export interface Collections {
   dashboards: { id: ID; name: string }; templates: { id: ID; name: string }
   entities: FinEntity; budgets: Budget; orders: Order; savings: Saving; contracts: Contract
   catalog: CatalogItem; audit: AuditEntry; financeSettings: FinanceSettings; shares: ShareLink
+  inbox: InboxItem; reminders: Reminder
 }
 export type Kind = keyof Collections;
 export const KINDS: Kind[] = [
   'spaces', 'folders', 'lists', 'tasks', 'docs', 'whiteboards', 'channels', 'messages', 'goals', 'timeEntries',
   'automations', 'dashboards', 'templates', 'entities', 'budgets', 'orders', 'savings', 'contracts', 'catalog', 'audit', 'financeSettings', 'shares',
+  'inbox', 'reminders',
 ];
+/** Kinds encrypted with the person's own key rather than the workspace key. */
+export const PERSONAL_KINDS: Kind[] = ['inbox', 'reminders'];
 export type Data = { [K in Kind]: Record<ID, Collections[K]> };
 export const emptyData = (): Data => Object.fromEntries(KINDS.map((k) => [k, {}])) as Data;
 

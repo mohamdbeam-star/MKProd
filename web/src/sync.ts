@@ -3,9 +3,9 @@
 // keeps it in step with the server: pull everything after `cursor` (decrypting), merge with
 // unsynced local edits field by field, then push changed objects (encrypting).
 
-import { Data, ID, Kind, KINDS, Member, emptyData, iso, uid, Task, Order } from './model';
+import { Data, ID, InboxItem, Kind, KINDS, Member, PERSONAL_KINDS, Reminder, emptyData, iso, uid, Task, Order } from './model';
 import {
-  Bytes, decryptRecord, encryptRecord, importWorkspaceKey, isEncrypted, newWorkspaceKey, open, openBytes, seal, sealBytes,
+  Bytes, decryptRecord, encryptRecord, importWorkspaceKey, isEncrypted, newWorkspaceKey, open, openBytes, personalKey, seal, sealBytes,
   unwrapWorkspaceKey, wrapWorkspaceKey,
 } from './crypto';
 import { Notice, contractNotices, digestNotices, isoWeek, orderNotices, taskNotices } from './notices';
@@ -15,7 +15,7 @@ export interface Session { user: SessionUser; privateKey: CryptoKey }
 export interface WorkspaceInfo { id: ID; name: string; role: string }
 export interface TeamMember { id: ID; email: string; name: string; color: string; role: string; publicKey: string | null; hasKey: number; totpEnabled?: number }
 export interface Presence { user_id: ID; viewing: string; client: string; last_seen: string }
-export interface InboxItem { id: ID; date: string; text: string; target?: string; read: boolean }
+export type { InboxItem } from './model';
 
 // ---------------------------------------------------------------- API
 
@@ -137,7 +137,6 @@ export class SyncEngine {
   members: Member[] = [];
   team: TeamMember[] = [];
   presence: Presence[] = [];
-  inbox: InboxItem[] = [];
   role = 'member';
   keyVersion = 0;
   status: Status = { state: 'idle' };
@@ -149,6 +148,8 @@ export class SyncEngine {
   /** Workspace keys by version. Raw bytes stay in memory only (needed to share with new members). */
   private keys = new Map<number, { key: CryptoKey; raw: Bytes }>();
   private wrappedMine: WrappedKey[] = [];
+  /** Encrypts inbox and reminders: derived from the own key pair, so only this person's devices have it. */
+  private personal?: CryptoKey;
   private listeners = new Set<() => void>();
   private timer?: number;
   private debounce?: number;
@@ -165,12 +166,16 @@ export class SyncEngine {
   get canWrite() { return this.role !== 'viewer'; }
   get isAdmin() { return this.role === 'owner' || this.role === 'admin'; }
   get encrypted() { return this.keyVersion > 0; }
+  /** Inbox, newest first, without cleared items. */
+  get inbox(): InboxItem[] { return this.list('inbox').filter((n) => !n.cleared).sort((a, b) => b.date.localeCompare(a.date)); }
+  get reminders(): Reminder[] { return this.list('reminders').sort((a, b) => a.date.localeCompare(b.date)); }
   private get key() { return `ws:${this.workspace.id}:${this.me}`; }
 
   subscribe(fn: () => void) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   private emit() { this.version++; this.listeners.forEach((f) => f()); }
 
   async start() {
+    if (this.session.user.publicKey) this.personal = await personalKey(this.session.privateKey, this.session.user.publicKey).catch(() => undefined);
     await this.loadCache();
     this.loaded = true;
     this.emit();
@@ -208,7 +213,6 @@ export class SyncEngine {
       this.data = { ...emptyData(), ...state.data };
       this.cursor = state.cursor;
       this.last = new Map(state.last);
-      this.inbox = state.inbox ?? [];
       this.members = state.members ?? [];
       this.keyVersion = saved.keyVersion;
     } catch {
@@ -221,7 +225,7 @@ export class SyncEngine {
     if (!this.loaded) return;
     clearTimeout(this.persistTimer);
     this.persistTimer = window.setTimeout(async () => {
-      const state = { data: this.data, cursor: this.cursor, last: [...this.last], inbox: this.inbox.slice(0, 300), members: this.members };
+      const state = { data: this.data, cursor: this.cursor, last: [...this.last], members: this.members };
       const k = this.keys.get(this.keyVersion);
       if (this.keyVersion > 0 && k) {
         const blob = await seal(k.key, new TextEncoder().encode(JSON.stringify(state)), `${this.workspace.id}|cache`);
@@ -267,16 +271,36 @@ export class SyncEngine {
   }
 
   notify(text: string, target?: string) {
-    this.inbox = [{ id: uid(), date: iso(), text, target, read: false }, ...this.inbox];
-    this.emit();
-    this.persist();
+    const item: InboxItem = { id: uid(), date: iso(), text, read: false, cleared: false };
+    if (target) item.target = target;
+    if (target?.startsWith('task:')) item.taskId = target.slice(5);
+    this.put('inbox', item);
     if ('Notification' in window && Notification.permission === 'granted' && document.hidden) new Notification('MK Prod', { body: text });
   }
 
   markInboxRead(id?: ID) {
-    this.inbox = this.inbox.map((n) => (id && n.id !== id ? n : { ...n, read: true }));
-    this.emit();
-    this.persist();
+    for (const n of this.inbox) if ((!id || n.id === id) && !n.read) this.update('inbox', n.id, (x) => { x.read = true; });
+  }
+
+  clearInbox(id?: ID) {
+    for (const n of this.inbox) if (!id || n.id === id) this.update('inbox', n.id, (x) => { x.cleared = true; x.read = true; });
+  }
+
+  addReminder(title: string, date: string, taskId?: ID) {
+    const r: Reminder = { id: uid(), title, date, done: false, notified: false };
+    if (taskId) r.taskId = taskId;
+    this.put('reminders', r);
+  }
+
+  /** Due reminders go to the inbox (and the desktop) once, from whichever device syncs first. */
+  private checkReminders() {
+    const now = iso();
+    for (const r of this.reminders) {
+      if (r.done || r.notified || r.date > now) continue;
+      this.update('reminders', r.id, (x) => { x.notified = true; });
+      this.notify(`⏰ ${r.title}`, r.taskId ? `task:${r.taskId}` : undefined);
+      if ('Notification' in window && Notification.permission === 'granted' && !document.hidden) new Notification('Reminder', { body: r.title });
+    }
   }
 
   // ---- keys
@@ -385,6 +409,7 @@ export class SyncEngine {
         }
         if (batch.length) await this.exchange(batch);
         this.sendNotices([...notices, ...this.dueContractNotices(), ...this.dueDigestNotices()]);
+        this.checkReminders();
       } else {
         this.revertLocalEdits();
       }
@@ -411,7 +436,13 @@ export class SyncEngine {
         seen.add(key);
         const plain = canonical(obj);
         if (this.last.get(key) === plain) continue;
-        const data = this.encrypted && k ? await encryptRecord(k.key, this.keyVersion, this.workspace.id, kind, id, obj) : obj;
+        let data: unknown = obj;
+        if (PERSONAL_KINDS.includes(kind)) {
+          if (!this.personal) continue; // never upload personal data in the clear
+          data = { ...(await encryptRecord(this.personal, this.keyVersion, this.workspace.id, kind, id, obj)), p: 1 };
+        } else if (this.encrypted && k) {
+          data = await encryptRecord(k.key, this.keyVersion, this.workspace.id, kind, id, obj);
+        }
         rows.push({ kind, id, data, deleted: false, plain });
       }
     }
@@ -449,6 +480,12 @@ export class SyncEngine {
     for (const r of rows) {
       if (!KINDS.includes(r.kind)) continue;
       if (r.deleted || !isEncrypted(r.data)) { plain.push(r); continue; }
+      if ((r.data as { p?: number }).p) {
+        // Someone's personal record: readable only with their key. Others' simply don't decrypt.
+        if (!this.personal) continue;
+        try { plain.push({ ...r, data: await decryptRecord(this.personal, this.workspace.id, r.kind, r.id, r.data) }); } catch { /* not ours */ }
+        continue;
+      }
       const k = this.keys.get(r.data.v);
       if (!k) {
         if (r.data.v >= this.keyVersion) return false; // current key not shared with us yet: retry later

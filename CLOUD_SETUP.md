@@ -85,7 +85,7 @@ The server enforces workspace roles. Order approvals follow each entity's approv
 - **Two people editing the same item:** changes merge field by field. Comments, checklist items and order lines from both sides are kept. If both change the same field, the later save wins.
 - **Offline:** the Mac app stores everything locally, and the website caches in the browser (IndexedDB). Both catch up when back online.
 - **Presence:** the sidebar shows who is online, and a task shows who else has it open.
-- **Notifications:** assignments, @mentions, assigned comments, orders waiting for *your* approval, and status changes of *your* orders go to the Inbox. You also get a desktop notification if you allow it.
+- **Inbox and reminders** are yours alone but follow you: assignments, @mentions, assigned comments, orders waiting for *your* approval, status changes of *your* orders and due reminders land in the Inbox on every device you use, read state included. They are encrypted with your own key, so teammates can't see them. Reminders are set on the website's Home page or in the Mac app and fire once, from whichever device is online at the time. You also get a desktop notification if you allow it.
 
 ## Local development
 

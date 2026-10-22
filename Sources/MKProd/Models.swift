@@ -301,6 +301,8 @@ struct InboxItem: Identifiable, Codable, Hashable {
     var taskId: UUID?
     var read = false
     var cleared = false
+    /// Set by the website for non-task links ("order:<id>", "chat:<id>"); kept so it survives a Mac edit.
+    var target: String?
 }
 
 // MARK: - Automations

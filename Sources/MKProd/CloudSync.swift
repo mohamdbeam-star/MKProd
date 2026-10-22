@@ -415,13 +415,20 @@ final class CloudSync {
         var rows: [[String: Any]] = []
         var seen = Set<String>()
         let wsKey = keys[keyVersion].map { SymmetricKey(data: $0) }
+        let personalKey = try client.keyPair.map { try E2E.personalKey($0) }
         for kind in SyncKind.all {
+            // Personal data is never uploaded in the clear; without a key pair it stays on this Mac.
+            if kind.personal && personalKey == nil { continue }
             for (id, data) in kind.snapshot(store.data) {
                 let key = "\(kind.name)/\(id.uuidString)"
                 seen.insert(key)
                 guard lastSynced[key] != data else { continue }
                 let payload: Any
-                if isEncrypted, let wsKey, let ws = workspaceId {
+                if kind.personal, let personalKey, let ws = workspaceId {
+                    var p = try E2E.encryptRecord(data, key: personalKey, version: keyVersion, ws: ws, kind: kind.name, id: id.uuidString)
+                    p["p"] = 1
+                    payload = p
+                } else if isEncrypted, let wsKey, let ws = workspaceId {
                     payload = try E2E.encryptRecord(data, key: wsKey, version: keyVersion, ws: ws, kind: kind.name, id: id.uuidString)
                 } else {
                     guard let obj = try? JSONSerialization.jsonObject(with: data) else { continue }
@@ -457,6 +464,15 @@ final class CloudSync {
             guard r["deleted"] as? Bool != true, let d = r["data"] as? [String: Any], d["enc"] is String,
                   let v = (d["v"] as? NSNumber)?.intValue, let kind = r["kind"] as? String, let id = r["id"] as? String
             else { out.append(r); continue }
+            if d["p"] != nil {
+                // Someone's personal record (inbox/reminder). Ours decrypts with our own key; others' are skipped.
+                guard let pair = client.keyPair, let personalKey = try? E2E.personalKey(pair),
+                      let plain = try? E2E.decryptRecord(d, key: personalKey, ws: ws, kind: kind, id: id),
+                      let obj = try? JSONSerialization.jsonObject(with: plain) else { continue }
+                r["data"] = obj
+                out.append(r)
+                continue
+            }
             guard let raw = keys[v] else {
                 if v >= keyVersion { return nil }
                 continue // retired key we never received; the record was re-encrypted since
@@ -655,16 +671,19 @@ final class CloudSync {
     }
 }
 
-/// One synced collection of `AppData`. Reminders, inbox and favorites stay personal and local.
+/// One synced collection of `AppData`. Favorites stay local; the inbox and reminders are
+/// `personal`: synced like everything else but encrypted with the person's own key (E2E.personalKey),
+/// so they reach all of their devices and nobody else.
 struct SyncKind {
     let name: String
     let snapshot: (AppData) -> [UUID: Data]
     let apply: (inout AppData, UUID, Data?) -> Void
     let canonicalize: (Data) -> Data?
+    var personal = false
 
     /// `defaults` fills fields another client (e.g. an older website build) left out, so the
     /// object still decodes instead of being dropped.
-    static func make<T: Codable & Identifiable>(_ name: String, _ kp: WritableKeyPath<AppData, [T]>, defaults: [String: Any] = [:]) -> SyncKind where T.ID == UUID {
+    static func make<T: Codable & Identifiable>(_ name: String, _ kp: WritableKeyPath<AppData, [T]>, defaults: [String: Any] = [:], personal: Bool = false) -> SyncKind where T.ID == UUID {
         let enc = JSONEncoder.cloud
         let dec = JSONDecoder.cloud
         return SyncKind(
@@ -688,7 +707,8 @@ struct SyncKind {
                     input = (try? JSONSerialization.data(withJSONObject: obj)) ?? raw
                 }
                 return (try? dec.decode(T.self, from: input)).flatMap { try? enc.encode($0) }.map(stableOrder)
-            }
+            },
+            personal: personal
         )
     }
 
@@ -796,6 +816,9 @@ struct SyncKind {
         make("catalog", \.catalog, defaults: ["category": "", "unitPrice": 0, "unit": "pcs", "supplier": "", "status": "approved", "addedDate": now]),
         make("audit", \.audit, defaults: ["details": ""]),
         make("financeSettings", \.financeSettings),
+        // Personal (own-key encrypted): same shapes as the website's InboxItem / Reminder.
+        make("inbox", \.inbox, defaults: ["read": false, "cleared": false], personal: true),
+        make("reminders", \.reminders, defaults: ["done": false, "notified": false], personal: true),
     ]
 
     static let byName: [String: SyncKind] = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })

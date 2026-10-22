@@ -68,6 +68,14 @@ enum E2E {
         try seal(kek, pair.privateKey.rawRepresentation, aad: "mkprod-v1:privkey")
     }
 
+    /// A key only this person's devices can derive (own key pair agreed with itself, through HKDF).
+    /// Encrypts the inbox and reminders so they sync between devices but stay unreadable to teammates.
+    /// Mirrors `personalKey` in web/src/crypto.ts.
+    static func personalKey(_ pair: KeyPair) throws -> SymmetricKey {
+        let shared = try pair.privateKey.sharedSecretFromKeyAgreement(with: pair.privateKey.publicKey)
+        return shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data("mkprod-v1-personal".utf8), sharedInfo: Data("personal".utf8), outputByteCount: 32)
+    }
+
     static func fingerprint(_ publicKey: String) -> String {
         guard let raw = Data(base64Encoded: publicKey) else { return "—" }
         let hex = SHA256.hash(data: raw).prefix(8).map { String(format: "%02X", $0) }.joined()

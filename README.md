@@ -27,7 +27,7 @@ Requirements: macOS 14+ and the Xcode Command Line Tools. Without full Xcode, th
 | Views | List (grouped, collapsible, inline add, drag to regroup), Board (drag between columns), Calendar (month/week, drag to reschedule), Gantt (drag bars, zoom, dependency arrows, today line), Table (sortable, custom-field columns), Workload (capacity heatmap), Mind Map, Form (submissions create tasks) |
 | Filtering | Search, assignee, priority, tag, show closed, overdue only, "Me mode"; group by status/priority/assignee/due/list; sort options |
 | Home | My Work (overdue/today/next/unscheduled), reminders, recents, notepad, 7-day agenda, goals |
-| Inbox | Notifications for assignments, mentions, reminders; read/clear/restore |
+| Inbox | Notifications for assignments, mentions, approvals, reminders; read/clear/restore. Synced across all your devices, private to you |
 | Docs | Nested pages, Markdown editor with live preview/split view, templates, export to `.md`, convert checkboxes to tasks |
 | Whiteboards | Stickies, text, shapes, connectors, colors, resize, zoom, convert to task |
 | Chat | Channels, per-Space channels, post as any member, create task from message |

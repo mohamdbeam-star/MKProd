@@ -109,9 +109,48 @@ export function HomePage() {
           <h3>Recently updated</h3>
           {engine.list('tasks').filter((t) => !t.archived).sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 10).map((t) => <MiniRow key={t.id} t={t} onClick={() => openTask(t.id)} />)}
         </div>
+        <RemindersCard />
       </div>
     </div>
   );
+}
+
+/** Personal reminders: synced to every device of the person, encrypted with their own key. */
+function RemindersCard() {
+  const { engine, openTask } = useApp();
+  const [title, setTitle] = useState('');
+  const [when, setWhen] = useState(() => { const d = new Date(Date.now() + 3600_000); d.setMinutes(0, 0, 0); return toLocalInput(d); });
+  const [showDone, setShowDone] = useState(false);
+  const items = engine.reminders.filter((r) => showDone || !r.done);
+  const add = () => {
+    if (!title.trim() || !when) return;
+    engine.addReminder(title.trim(), iso(new Date(when)));
+    setTitle('');
+  };
+  return (
+    <div className="card col">
+      <div className="row"><h3 className="grow">⏰ Reminders</h3><label className="row small muted"><input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} /> show done</label></div>
+      {items.length === 0 && <p className="muted small">No reminders. They pop up in your Inbox and on your desktop at the chosen time, on whichever device you're using.</p>}
+      {items.map((r) => (
+        <div key={r.id} className="row" style={{ padding: '3px 0' }}>
+          <input type="checkbox" checked={r.done} onChange={() => engine.update('reminders', r.id, (x) => { x.done = !x.done; })} />
+          <span className="grow" style={{ textDecoration: r.done ? 'line-through' : undefined, cursor: r.taskId ? 'pointer' : undefined }} onClick={() => r.taskId && openTask(r.taskId)}>{r.title}</span>
+          <span className={`small ${!r.done && new Date(r.date) < new Date() ? 'red' : 'muted'}`}>{new Date(r.date).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+          <button className="btn ghost sm" onClick={() => engine.remove('reminders', r.id)}>✕</button>
+        </div>
+      ))}
+      <div className="row wrap">
+        <input className="input grow" placeholder="Remind me to…" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
+        <input className="input" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+        <button className="btn primary" disabled={!title.trim() || !when} onClick={add}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+function toLocalInput(d: Date) {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function Stat({ label, n, color, onClick }: { label: string; n: number; color: string; onClick?: () => void }) {
@@ -140,19 +179,22 @@ export function InboxPage() {
   const { engine, openTask, go } = useApp();
   return (
     <div className="card">
-      <div className="row"><h2 className="grow">Inbox</h2><button className="btn" onClick={() => engine.markInboxRead()}>Mark all read</button></div>
-      {engine.inbox.length === 0 && <Empty icon="📭" title="Inbox zero" sub="Assignments, mentions and approvals from teammates appear here." />}
+      <div className="row"><h2 className="grow">Inbox</h2><button className="btn" onClick={() => engine.markInboxRead()}>Mark all read</button><button className="btn" onClick={() => confirm('Clear all inbox items?') && engine.clearInbox()}>Clear all</button></div>
+      <p className="small muted">Synced to all your devices, and private to you: encrypted with your own key, not the workspace key.</p>
+      {engine.inbox.length === 0 && <Empty icon="📭" title="Inbox zero" sub="Assignments, mentions, approvals and reminders appear here." />}
       {engine.inbox.map((n) => (
         <div key={n.id} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)', cursor: 'pointer', fontWeight: n.read ? 400 : 600 }}
           onClick={() => {
             engine.markInboxRead(n.id);
-            if (n.target?.startsWith('task:')) openTask(n.target.slice(5));
-            else if (n.target?.startsWith('order:')) go('orders/' + n.target.slice(6));
-            else if (n.target?.startsWith('chat:')) go('chat/' + n.target.slice(5));
+            const target = n.target ?? (n.taskId ? `task:${n.taskId}` : undefined);
+            if (target?.startsWith('task:')) openTask(target.slice(5));
+            else if (target?.startsWith('order:')) go('orders/' + target.slice(6));
+            else if (target?.startsWith('chat:')) go('chat/' + target.slice(5));
           }}>
           {!n.read && <span style={{ width: 8, height: 8, borderRadius: 4, background: 'var(--accent)' }} />}
           <span className="grow">{n.text}</span>
           <span className="small muted">{new Date(n.date).toLocaleString()}</span>
+          <button className="btn ghost sm" title="Clear" onClick={(e) => { e.stopPropagation(); engine.clearInbox(n.id); }}>✕</button>
         </div>
       ))}
     </div>
