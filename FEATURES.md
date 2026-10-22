@@ -20,6 +20,7 @@ Everything below is available in the Mac app and on the website (and therefore i
 - **Purchase orders and direct expenses:** multi-level approval, extra approval for unbudgeted spend, PO numbers, Ordered → Shipped → Delivered → Completed, assignment, full history, printable/Excel order record for audits.
 - **Supplier links:** read-only, expiring, encrypted pages suppliers open without an account to confirm, decline or ask.
 - **Shopping catalog** with cart, item requests, bulk import from Excel/CSV with a template.
+- **One Import / Export button** on Budgets, Shopping catalog and Contracts (website, Windows, Android and Mac): download the template, upload it filled in (matching rows are updated, new ones added, bad rows reported), or export everything. Row-by-row entry stays separate (**+ New …**).
 - **Contracts** (active, expiring, expired, renewing) with reminders 60/30/14/7/1 days before the end.
 - **Savings**, **Alerts**, **Analytics** (overview, year over year, variance, spend, order time), **Reports**, **Audit log**.
 

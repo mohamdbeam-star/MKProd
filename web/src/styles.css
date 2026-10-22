@@ -326,3 +326,8 @@ body {
 .mm-children { display: flex; flex-direction: column; gap: 10px; border-left: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); padding-left: 24px; margin-left: 4px; }
 .mm-branch { display: flex; align-items: center; gap: 24px; position: relative; }
 .mm-branch::before { content: ''; position: absolute; left: -24px; top: 50%; width: 20px; height: 2px; background: color-mix(in srgb, var(--accent) 40%, transparent); }
+
+/* One button for template / upload / export (Finance pages). */
+.data-menu { position: relative; display: inline-flex; }
+.data-menu .menu { right: 0; top: calc(100% + 4px); min-width: 280px; }
+.data-menu .menu .item { align-items: flex-start; }

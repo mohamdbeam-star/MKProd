@@ -6,7 +6,8 @@ cd "$(dirname "$0")/../.."
 PORT=${PORT:-8799}
 WORK=$(mktemp -d)
 CREATED_SCHEMA=0
-trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"; [ "$CREATED_SCHEMA" = 1 ] && rm -f web/migrations/0001_init.sql' EXIT
+# wrangler dev leaves a workerd child behind when only its parent is killed; stop both by name.
+trap 'kill $(jobs -p) 2>/dev/null || true; pkill -f "wrangler dev --port $PORT " 2>/dev/null || true; pkill -f "smtp_sink.mjs $((PORT + 1)) " 2>/dev/null || true; sleep 1; rm -rf "$WORK"; [ "$CREATED_SCHEMA" = 1 ] && rm -f web/migrations/0001_init.sql' EXIT
 
 (cd web && [ -d node_modules ] || npm ci --silent)
 # Until the original migrations are committed, use the reconstructed schema (removed again on exit).
@@ -23,5 +24,6 @@ curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null || { echo "Worker did no
 status=0
 echo "== core sync API"; node Tests/api/core.mjs "$WORK/mail" || status=1
 echo "== trust & compliance"; node Tests/api/trust_and_compliance.mjs "$WORK/mail" || status=1
+echo "== adversarial"; node Tests/api/adversarial.mjs "$WORK/mail" || status=1
 if grep -q "ERROR" "$WORK/wrangler.log"; then echo "== Worker logged errors:"; grep -A3 "ERROR" "$WORK/wrangler.log" | head -30; status=1; fi
 exit $status

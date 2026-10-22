@@ -386,7 +386,7 @@ struct FinanceReportsView: View {
             }
             Section("Import templates") {
                 exportRow("Budget import template", "budget-template.csv") { "Entity,Year,Category,Line Item,Allocated,Notes\nFinance Dept,\(Calendar.current.component(.year, from: Date())),IT,Laptops,50000,Replacement cycle" }
-                Text("Import budgets from Budgets → Import CSV.").font(.caption).foregroundStyle(.secondary)
+                Text("Budgets, the shopping catalog and contracts each have an Import / Export button: download the template there, fill it in, upload it.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Printable") {
                 Button("Executive report (PDF)…") { exportExecutivePDF() }

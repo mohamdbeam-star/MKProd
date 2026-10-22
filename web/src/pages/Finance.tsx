@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Budget, CatalogItem, Contract, ID, Order, Saving, iso, newOrderDraft, toInputDate, fromInputDate, uid, addDays } from '../model';
 import { Avatar, CHART_COLORS, ChartBox, Empty, KPI, Modal, Pill, UtilBar, member, useApp } from '../ui';
@@ -32,6 +32,79 @@ function download(name: string, rows: Record<string, unknown>[], sheet = 'Data')
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sheet);
   XLSX.writeFile(wb, name);
+}
+
+// ---------------------------------------------------------------- Bulk import helpers
+
+/** Rows of the first sheet of an Excel/CSV file; dates come back as Date objects. */
+async function readRows(file: File): Promise<Record<string, unknown>[]> {
+  if (file.size > 10 * 1024 * 1024) throw new Error('The file is larger than 10 MB');
+  const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  if (!sheet) return [];
+  return XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+}
+/** Value of the first column whose header matches one of `names` (case- and space-insensitive). */
+function cell(r: Record<string, unknown>, ...names: string[]): unknown {
+  const want = names.map((n) => n.replace(/\s+/g, '').toLowerCase());
+  // Several columns can match (e.g. "Entity" and "entity" in a hand-edited sheet): take the first filled one.
+  const keys = Object.keys(r).filter((x) => want.includes(x.replace(/\s+/g, '').toLowerCase()));
+  const k = keys.find((x) => String(r[x] ?? '').trim() !== '') ?? keys[0];
+  return k === undefined ? undefined : r[k];
+}
+const text = (v: unknown, max = 500) => String(v ?? '').trim().slice(0, max);
+/** A number from a cell; blanks are NaN (not 0), so a missing price or amount is noticed. */
+const num = (v: unknown) => {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  const s = String(v ?? '').replace(/[^0-9.-]/g, '');
+  return s === '' || s === '-' ? NaN : Number(s);
+};
+/** Accepts Excel dates, ISO strings (2026-03-31), and day-first strings (31/03/2026 or 31.03.2026). */
+function date(v: unknown): string | undefined {
+  if (v instanceof Date) return isNaN(v.getTime()) ? undefined : iso(v);
+  if (typeof v === 'number' && v > 20000 && v < 80000) { const d = XLSX.SSF.parse_date_code(v); return d ? iso(new Date(d.y, d.m - 1, d.d)) : undefined; }
+  const s = text(v, 40);
+  if (!s) return undefined;
+  const dmy = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (dmy) { const d = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1])); return isNaN(d.getTime()) ? undefined : iso(d); }
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T00:00:00' : s);
+  return isNaN(d.getTime()) ? undefined : iso(d);
+}
+const yes = (v: unknown) => /^(y|yes|true|1|x)$/i.test(text(v, 10));
+
+/**
+ * One button for everything bulk: download the template, upload it filled in, export. The
+ * row-by-row editors stay separate ("+ New …").
+ */
+function DataMenu({ what, columns, onTemplate, onImport, onExport, canImport = true }: { what: string; columns: string; onTemplate: () => void; onImport: (f: File) => void; onExport: () => void; canImport?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    window.addEventListener('click', close); window.addEventListener('keydown', key);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', key); };
+  }, [open]);
+  const item = (label: string, hint: string, run: () => void) => (
+    <div className="item" role="menuitem" tabIndex={0} onClick={() => { setOpen(false); run(); }} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(false); run(); } }}>
+      <div><div>{label}</div><div className="small muted">{hint}</div></div>
+    </div>
+  );
+  return (
+    <span className="data-menu" onClick={(e) => e.stopPropagation()}>
+      <button className="btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>⇅ Import / Export</button>
+      {open && (
+        <div className="menu" role="menu" aria-label={`Import or export ${what}`}>
+          {item('⬇ Download template', `Excel file with the ${what} columns and example rows`, onTemplate)}
+          {canImport && item('⬆ Upload filled template…', 'Excel or CSV; existing rows are updated, new ones added', () => fileRef.current?.click())}
+          {item('📤 Export to Excel', `All ${what} as they are now`, onExport)}
+          <div className="small muted" style={{ padding: '6px 10px', maxWidth: 300, whiteSpace: 'normal' }}>Columns: {columns}</div>
+        </div>
+      )}
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" hidden data-testid={`import-${what}`} onChange={(ev) => { const f = ev.target.files?.[0]; if (f) onImport(f); ev.target.value = ''; }} />
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------- Overview
@@ -111,26 +184,29 @@ export function BudgetsPage() {
     .sort((a, b) => (fin.entity(a.entityId)?.name ?? '').localeCompare(fin.entity(b.entityId)?.name ?? '') || a.category.localeCompare(b.category));
   const total = budgets.map((b) => fin.budgetFigures(b)).reduce(add, zero());
 
+  /** Bulk upload: a line per row; rows with the same Entity + Year + Category land in one budget. A line that already exists there is updated. */
   const importFile = async (file: File) => {
-    const wb = XLSX.read(await file.arrayBuffer());
-    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(wb.Sheets[wb.SheetNames[0]]);
-    let n = 0;
+    if (!fin.isAdmin) { toast('Only owners and admins can import budgets'); return; }
+    let rows: Record<string, unknown>[];
+    try { rows = await readRows(file); } catch (err) { toast(`Could not read ${file.name}: ${(err as Error).message}`); return; }
+    let added = 0, updated = 0, skipped = 0;
     const ents = [...engine.list('entities')];
     const budgets = engine.list('budgets').map((b) => structuredClone(b));
     for (const r of rows) {
-      const name = String(r.Entity ?? '').trim(), yr = Number(r.Year), cat = String(r.Category ?? '').trim(), amount = Number(String(r.Allocated ?? '').replace(/,/g, ''));
-      if (!name || !yr || !cat || !amount) continue;
+      const name = text(cell(r, 'entity', 'department'), 120), yr = Math.round(num(cell(r, 'year'))), cat = text(cell(r, 'category'), 80), amount = num(cell(r, 'allocated', 'amount', 'budget'));
+      if (!name || !(yr >= 2000 && yr <= 2100) || !cat || !(amount >= 0)) { skipped++; continue; }
       let en = ents.find((x) => x.name.toLowerCase() === name.toLowerCase());
       if (!en) { en = { id: uid(), name, code: '', approvalLevels: ['Requestor', 'Manager'], roles: [] }; ents.push(en); engine.put('entities', en); }
-      const line = { id: uid(), name: String(r['Line Item'] ?? 'General'), allocated: amount, notes: String(r.Notes ?? '') };
+      const lineName = text(cell(r, 'line item', 'line', 'item'), 120) || 'General', notes = text(cell(r, 'notes'));
       let b = budgets.find((x) => x.entityId === en!.id && x.year === yr && x.category === cat);
-      if (b) b.lineItems.push(line); else { b = { id: uid(), entityId: en.id, year: yr, category: cat, notes: '', lineItems: [line], created: iso() }; budgets.push(b); }
+      if (!b) { b = { id: uid(), entityId: en.id, year: yr, category: cat, notes: '', lineItems: [], created: iso() }; budgets.push(b); }
+      const line = b.lineItems.find((l) => l.name.toLowerCase() === lineName.toLowerCase());
+      if (line) { line.allocated = amount; if (notes) line.notes = notes; updated++; } else { b.lineItems.push({ id: uid(), name: lineName, allocated: amount, notes }); added++; }
       engine.put('budgets', b);
       fin.saveSettings((s) => { if (!s.years.includes(yr)) s.years.push(yr); if (!s.categories.includes(cat)) s.categories.push(cat); });
-      n++;
     }
-    fin.audit('Imported budgets', `${n} line items`);
-    toast(`Imported ${n} budget line(s)`);
+    if (added || updated) fin.audit('Imported budgets', `${file.name}: ${added} line(s) added, ${updated} updated`);
+    toast(`${added} budget line(s) added, ${updated} updated${skipped ? `, ${skipped} row(s) skipped (need Entity, Year, Category, Allocated)` : ''}`);
   };
 
   return (
@@ -138,8 +214,13 @@ export function BudgetsPage() {
       <div className="toolbar">
         <h1 className="grow">Budgets</h1>
         <Filters y={y} setY={setY} e={e} setE={setE} />
-        <button className="btn" onClick={() => download('budget-template.xlsx', [{ Entity: 'Finance Dept', Year: year, Category: 'IT', 'Line Item': 'Laptops', Allocated: 50000, Notes: '' }], 'Budgets')}>⬇ Template</button>
-        <label className="btn">⬆ Import Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={(ev) => ev.target.files?.[0] && importFile(ev.target.files[0])} /></label>
+        <DataMenu what="budgets" columns="Entity, Year, Category, Line Item, Allocated, Notes" canImport={fin.isAdmin}
+          onTemplate={() => download('budget-template.xlsx', [
+            { Entity: 'Finance Dept', Year: year, Category: fin.settings.categories[0] ?? 'IT', 'Line Item': 'Laptops', Allocated: 50000, Notes: 'Replacement cycle' },
+            { Entity: 'Finance Dept', Year: year, Category: fin.settings.categories[0] ?? 'IT', 'Line Item': 'Software licences', Allocated: 12000, Notes: '' },
+            { Entity: 'Operations', Year: year, Category: fin.settings.categories[1] ?? 'Facilities', 'Line Item': 'Cleaning', Allocated: 30000, Notes: '' }], 'Budgets')}
+          onImport={importFile}
+          onExport={() => download('budgets.xlsx', engine.list('budgets').flatMap((b) => b.lineItems.map((l) => { const lf = fin.figures(b.id, l.id); return { Entity: fin.entity(b.entityId)?.name ?? '', Year: b.year, Category: b.category, 'Line Item': l.name, Allocated: l.allocated, Spent: lf.spent, Committed: lf.committed, Pending: lf.pending, Balance: balance(lf), Notes: l.notes }; })), 'Budgets')} />
         <button className="btn primary" disabled={!fin.isAdmin || !entities.length} onClick={() => setEditing({ id: uid(), entityId: e || entities[0].id, year: y || year, category: fin.settings.categories[0] ?? 'General', notes: '', lineItems: [{ id: uid(), name: 'General', allocated: 0, notes: '' }], created: iso() })}>+ New budget</button>
       </div>
       <div className="grid g4">
@@ -417,26 +498,26 @@ export function CatalogPage() {
 
   /** Bulk upload from the Excel/CSV template: existing items (same name + supplier) are updated, new ones added. */
   const importFile = async (file: File) => {
-    const wb = XLSX.read(await file.arrayBuffer());
-    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(wb.Sheets[wb.SheetNames[0]]);
-    const col = (r: Record<string, any>, ...names: string[]) => { const k = Object.keys(r).find((x) => names.includes(x.trim().toLowerCase())); return k ? r[k] : undefined; };
-    const existing = engine.list('catalog');
+    if (!engine.canWrite) { toast('Viewers cannot import catalog items'); return; }
+    let rows: Record<string, unknown>[];
+    try { rows = await readRows(file); } catch (err) { toast(`Could not read ${file.name}: ${(err as Error).message}`); return; }
+    const existing = [...engine.list('catalog')]; // grows as rows are added, so a duplicate row in the same file updates instead of doubling
     let added = 0, updated = 0, skipped = 0;
     const newCats = new Set<string>();
     for (const r of rows) {
-      const name = String(col(r, 'name', 'item', 'product', 'description') ?? '').trim();
-      const price = Number(String(col(r, 'unit price', 'price', 'unitprice') ?? '').replace(/[^0-9.-]/g, ''));
+      const name = text(cell(r, 'name', 'item', 'product', 'description'), 200);
+      const price = num(cell(r, 'unit price', 'price', 'unitprice'));
       if (!name || !(price >= 0)) { skipped++; continue; }
-      const supplier = String(col(r, 'supplier', 'vendor') ?? '').trim();
-      const category = String(col(r, 'category') ?? '').trim() || fin.settings.itemCategories[0] || 'Other';
-      const unit = String(col(r, 'unit', 'uom') ?? '').trim() || 'pcs';
+      const supplier = text(cell(r, 'supplier', 'vendor'), 120);
+      const category = text(cell(r, 'category'), 80) || fin.settings.itemCategories[0] || 'Other';
+      const unit = text(cell(r, 'unit', 'uom'), 20) || 'pcs';
       if (!fin.settings.itemCategories.includes(category)) newCats.add(category);
       const match = existing.find((c) => c.name.toLowerCase() === name.toLowerCase() && c.supplier.toLowerCase() === supplier.toLowerCase());
-      if (match) { engine.put('catalog', { ...match, category, unitPrice: price, unit, status: fin.isAdmin ? 'approved' : match.status }); updated++; }
-      else { engine.put('catalog', { id: uid(), name, category, unitPrice: price, unit, supplier, status: fin.isAdmin ? 'approved' : 'pending', addedBy: engine.me, addedDate: iso() }); added++; }
+      if (match) { const next = { ...match, category, unitPrice: price, unit, status: fin.isAdmin ? 'approved' : match.status }; engine.put('catalog', next); existing[existing.indexOf(match)] = next; updated++; }
+      else { const item: CatalogItem = { id: uid(), name, category, unitPrice: price, unit, supplier, status: fin.isAdmin ? 'approved' : 'pending', addedBy: engine.me, addedDate: iso() }; engine.put('catalog', item); existing.push(item); added++; }
     }
     if (newCats.size && fin.isAdmin) fin.saveSettings((s) => { s.itemCategories = [...s.itemCategories, ...newCats]; });
-    fin.audit('Imported catalog', `${file.name}: ${added} added, ${updated} updated`);
+    if (added || updated) fin.audit('Imported catalog', `${file.name}: ${added} added, ${updated} updated`);
     toast(`${added} added, ${updated} updated${skipped ? `, ${skipped} row(s) skipped (no name or price)` : ''}${!fin.isAdmin && added ? '. New items wait for admin approval.' : ''}`);
   };
   const template = () => download('catalog-template.xlsx', [
@@ -453,9 +534,7 @@ export function CatalogPage() {
           <h1 className="grow">Shopping catalog</h1>
           <input className="input" placeholder="Search catalog" value={q} onChange={(e) => setQ(e.target.value)} />
           <select className="input" value={cat} onChange={(e) => setCat(e.target.value)}><option value="">All categories</option>{fin.settings.itemCategories.map((x) => <option key={x}>{x}</option>)}</select>
-          <button className="btn" title="Excel file with the expected columns and three example rows" onClick={template}>⬇ Template</button>
-          {engine.canWrite && <label className="btn" title="Upload many products at once from Excel or CSV (columns: Name, Category, Unit price, Unit, Supplier)">⬆ Import Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={(ev) => { const f = ev.target.files?.[0]; if (f) importFile(f); ev.target.value = ''; }} /></label>}
-          <button className="btn" onClick={exportAll}>⬇ Export</button>
+          <DataMenu what="catalog items" columns="Name, Category, Unit price, Unit, Supplier" canImport={engine.canWrite} onTemplate={template} onImport={importFile} onExport={exportAll} />
           <button className="btn primary" onClick={() => setItem({ id: uid(), name: '', category: fin.settings.itemCategories[0] ?? '', unitPrice: 0, unit: 'pcs', supplier: '', status: fin.isAdmin ? 'approved' : 'pending', addedBy: engine.me, addedDate: iso() })}>{fin.isAdmin ? '+ Add item' : '+ Request item'}</button>
         </div>
         {fin.isAdmin && pending.length > 0 && (
@@ -528,18 +607,60 @@ function CatalogItemEditor({ item, onClose }: { item: CatalogItem; onClose: () =
 // ---------------------------------------------------------------- Contracts
 
 export function ContractsPage() {
-  const { engine, fin } = useApp();
+  const { engine, fin, toast } = useApp();
   const [status, setStatus] = useState('');
   const [editing, setEditing] = useState<Contract | null>(null);
   const all = engine.list('contracts');
   const contracts = all.filter((c) => !status || fin.contractStatus(c) === status).sort((a, b) => a.endDate.localeCompare(b.endDate));
   const active = all.filter((c) => ['Active', 'Expiring'].includes(fin.contractStatus(c)));
+
+  const template = () => download('contracts-template.xlsx', [
+    { Title: 'Cleaning services HQ', Supplier: 'Cleanco', Type: fin.settings.contractTypes[0] ?? 'Service', Entity: engine.list('entities')[0]?.name ?? 'Operations', Value: 120000, Start: `${year}-01-01`, End: `${year}-12-31`, 'Auto renew': 'Yes', Contact: 'Sara Ali', Email: 'sara@cleanco.example', Phone: '+971 50 000 0000', Notes: 'Monthly invoicing' },
+    { Title: 'Printer fleet lease', Supplier: 'Xerox', Type: fin.settings.contractTypes[3] ?? 'Lease', Entity: '', Value: 36000, Start: `${year}-03-01`, End: `${year + 2}-02-28`, 'Auto renew': 'No', Contact: '', Email: '', Phone: '', Notes: 'Whole organization' },
+  ], 'Contracts');
+  /** Bulk upload from the template: a contract with the same Title + Supplier is updated, otherwise added. */
+  const importFile = async (file: File) => {
+    if (!engine.canWrite) { toast('Viewers cannot import contracts'); return; }
+    let rows: Record<string, unknown>[];
+    try { rows = await readRows(file); } catch (err) { toast(`Could not read ${file.name}: ${(err as Error).message}`); return; }
+    const entities = engine.list('entities');
+    const known = [...all]; // grows as rows are added, so a duplicate row in the same file updates instead of doubling
+    let added = 0, updated = 0, skipped = 0;
+    const newTypes = new Set<string>();
+    for (const r of rows) {
+      const title = text(cell(r, 'title', 'contract', 'name'), 200);
+      const start = date(cell(r, 'start', 'start date', 'from'));
+      const end = date(cell(r, 'end', 'end date', 'to', 'expiry'));
+      if (!title || !start || !end || end < start) { skipped++; continue; }
+      const supplier = text(cell(r, 'supplier', 'vendor'), 120);
+      const type = text(cell(r, 'type'), 60) || fin.settings.contractTypes[0] || 'Service';
+      if (!fin.settings.contractTypes.includes(type)) newTypes.add(type);
+      const entityName = text(cell(r, 'entity', 'department'), 120);
+      const entity = entityName ? entities.find((x) => x.name.toLowerCase() === entityName.toLowerCase()) : undefined;
+      const value = num(cell(r, 'value', 'amount', 'contract value'));
+      const existing = known.find((c) => c.title.toLowerCase() === title.toLowerCase() && c.supplier.toLowerCase() === supplier.toLowerCase());
+      const c: Contract = {
+        ...(existing ?? { id: uid(), terminated: false }),
+        title, supplier, type, value: value >= 0 ? value : existing?.value ?? 0, startDate: start, endDate: end,
+        autoRenew: yes(cell(r, 'auto renew', 'autorenew', 'renews')),
+        contact: text(cell(r, 'contact'), 120), email: text(cell(r, 'email'), 120), phone: text(cell(r, 'phone'), 40), notes: text(cell(r, 'notes'), 2000),
+      };
+      if (entity) c.entityId = entity.id; else delete c.entityId;
+      engine.put('contracts', c);
+      if (existing) { known[known.indexOf(existing)] = c; updated++; } else { known.push(c); added++; }
+    }
+    if (newTypes.size && fin.isAdmin) fin.saveSettings((s) => { s.contractTypes = [...s.contractTypes, ...newTypes]; });
+    if (added || updated) fin.audit('Imported contracts', `${file.name}: ${added} added, ${updated} updated`);
+    toast(`${added} contract(s) added, ${updated} updated${skipped ? `, ${skipped} row(s) skipped (need Title, Start and End dates)` : ''}`);
+  };
+  const exportAll = () => download('contracts.xlsx', all.map((c) => ({ Title: c.title, Supplier: c.supplier, Type: c.type, Entity: fin.entity(c.entityId)?.name ?? '', Value: c.value, Start: c.startDate.slice(0, 10), End: c.endDate.slice(0, 10), 'Auto renew': c.autoRenew ? 'Yes' : 'No', Status: fin.contractStatus(c), Contact: c.contact, Email: c.email, Phone: c.phone, Notes: c.notes })), 'Contracts');
+
   return (
     <div className="col" style={{ gap: 12 }}>
       <div className="toolbar">
         <h1 className="grow">Contracts</h1>
         <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All</option>{['Active', 'Expiring', 'Expired', 'Renewing', 'Upcoming', 'Terminated'].map((x) => <option key={x}>{x}</option>)}</select>
-        <button className="btn" onClick={() => download('contracts.xlsx', all.map((c) => ({ Title: c.title, Supplier: c.supplier, Type: c.type, Entity: fin.entity(c.entityId)?.name ?? '', Value: c.value, Start: c.startDate.slice(0, 10), End: c.endDate.slice(0, 10), 'Auto renew': c.autoRenew ? 'Yes' : 'No', Status: fin.contractStatus(c), Contact: c.contact, Email: c.email, Phone: c.phone })), 'Contracts')}>⬇ Excel</button>
+        <DataMenu what="contracts" columns="Title, Supplier, Type, Entity, Value, Start, End, Auto renew, Contact, Email, Phone, Notes" canImport={engine.canWrite} onTemplate={template} onImport={importFile} onExport={exportAll} />
         <button className="btn primary" onClick={() => setEditing({ id: uid(), title: '', supplier: '', type: fin.settings.contractTypes[0] ?? '', value: 0, startDate: iso(), endDate: iso(addDays(new Date(), 365)), autoRenew: false, terminated: false, contact: '', email: '', phone: '', notes: '' })}>+ New contract</button>
       </div>
       <div className="grid g4">

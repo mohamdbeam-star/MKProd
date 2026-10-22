@@ -80,7 +80,8 @@ Available in both the Mac app and the website:
 - **Savings**
 - **Alerts**: over budget, budget lines ≥90% used, expiring contracts, late deliveries, approvals waiting
 - **Analytics**: executive overview, year over year, budget variance, spend analysis (with price variance), order time
-- **Reports**: Excel downloads on the website, CSV and a PDF executive report in the Mac app; budget import from Excel/CSV templates
+- **Reports**: Excel downloads on the website, CSV and a PDF executive report in the Mac app
+- **Bulk import**: budgets, the shopping catalog and contracts each have one **Import / Export** button: download the template, fill it in, upload it (existing rows are updated, new ones added), or export everything. Single entries are still added one by one with **+ New …**
 - **Audit log** of every finance action
 - **Supplier links** (website): a read-only, expiring, encrypted page per order that the supplier opens without an account to confirm, decline or ask
 - **Order record** (website): the full order with its approval trail as PDF or Excel, for auditors
@@ -93,8 +94,9 @@ See **[FEATURES.md](FEATURES.md)** for the full feature checklist.
 ## Tests
 
 ```bash
-Tests/api/run.sh        # any machine with Node 20+: ~100 API checks (auth, 2FA, roles, encrypted sync, shares, files, deletion)
+Tests/api/run.sh        # any machine with Node 20+: ~180 API checks (auth, 2FA, roles, encrypted sync, shares, files, deletion) incl. an attacker suite (cross-workspace access, role escalation, brute force, oversized/malformed input, headers, injection)
+Tests/browser/*.mjs     # Playwright against the real site: sidebar & workspaces, personal sync, bulk import/export
 Tests/run_sync_e2e.sh   # macOS only: two Mac-client processes against the real Worker, 34 checks
 ```
 
-Both start the real Worker with `wrangler dev` on a throwaway local database, with a local mail sink so email flows (verification codes, sign-in alerts, notifications) are exercised too.
+All start the real Worker with `wrangler dev` on a throwaway local database (the API suite with a local mail sink so email flows are exercised too). The latest results are in **[TEST_REPORT.md](TEST_REPORT.md)**.

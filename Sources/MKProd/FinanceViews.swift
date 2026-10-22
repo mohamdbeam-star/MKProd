@@ -96,7 +96,78 @@ struct UtilizationBar: View {
     }
 }
 
-func csvEscape(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
+/// Quotes a CSV cell. A cell starting with = + - or @ is prefixed with an apostrophe so that a
+/// spreadsheet opens it as text instead of running it as a formula (CSV injection); plain
+/// numbers and phone numbers such as "+971 50 …" are left alone.
+func csvEscape(_ s: String) -> String {
+    var v = s
+    if let f = s.first, "=+-@\t\r".contains(f), s.range(of: #"^[+-]?[\d.,\s()-]+$"#, options: .regularExpression) == nil { v = "'" + s }
+    return "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+}
+
+// MARK: - Bulk import / export
+
+/// Rows of a CSV that has a header line, keyed by the lower-cased header without spaces.
+func csvRecords(_ text: String) -> [[String: String]] {
+    let rows = CSVTaskImporter.parseCSV(text)
+    guard let header = rows.first else { return [] }
+    let keys = header.map { $0.lowercased().filter { !$0.isWhitespace } }
+    return rows.dropFirst().map { r in
+        Dictionary(zip(keys, r).map { ($0, $1.trimmingCharacters(in: .whitespacesAndNewlines)) }, uniquingKeysWith: { a, _ in a })
+    }
+}
+/// First non-empty value among the given column names (case- and space-insensitive).
+func csvField(_ r: [String: String], _ names: String...) -> String {
+    for n in names { if let v = r[n.lowercased().filter({ !$0.isWhitespace })], !v.isEmpty { return v } }
+    return ""
+}
+func csvNumber(_ s: String) -> Double? { Double(s.filter { "0123456789.-".contains($0) }) }
+/// 2026-03-31, 31/03/2026 or 31.03.2026.
+func csvDate(_ s: String) -> Date? {
+    let t = s.trimmingCharacters(in: .whitespaces)
+    guard !t.isEmpty else { return nil }
+    for fmt in ["yyyy-MM-dd", "dd/MM/yyyy", "dd.MM.yyyy", "d/M/yyyy", "yyyy/MM/dd", "MMM d, yyyy", "d MMM yyyy"] {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = fmt
+        if let d = f.date(from: t) { return d }
+    }
+    return ISO8601DateFormatter().date(from: t)
+}
+func csvYes(_ s: String) -> Bool { ["y", "yes", "true", "1", "x"].contains(s.trimmingCharacters(in: .whitespaces).lowercased()) }
+let isoDay: Date.ISO8601FormatStyle = .iso8601.year().month().day()
+
+/// One button for everything bulk: CSV template, upload of the filled template, export. The
+/// row-by-row editors ("New …") stay separate. Same menu on the website.
+struct DataMenu: View {
+    var what: String
+    var columns: String
+    var canImport = true
+    var templateName: String
+    var template: () -> String
+    var importText: (String) -> Void
+    var export: () -> Void
+
+    var body: some View {
+        Menu {
+            Button { saveText(template(), name: templateName) } label: { Label("Download template (CSV)", systemImage: "arrow.down.doc") }
+            if canImport { Button { pick() } label: { Label("Upload filled template…", systemImage: "arrow.up.doc") } }
+            Button { export() } label: { Label("Export \(what) to CSV", systemImage: "square.and.arrow.up") }
+            Divider()
+            Text("Columns: \(columns)")
+        } label: { Label("Import / Export", systemImage: "arrow.up.arrow.down") }
+        .fixedSize()
+        .help("Download the \(what) template, upload it filled in, or export everything")
+    }
+
+    private func pick() {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.commaSeparatedText, .plainText]
+        p.message = "Columns: \(columns)"
+        guard p.runModal() == .OK, let url = p.url else { return }
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 10 * 1024 * 1024 { return }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        importText(text)
+    }
+}
 
 func saveText(_ text: String, name: String) {
     let p = NSSavePanel()
@@ -120,7 +191,8 @@ struct BudgetsView: View {
             HStack {
                 FinanceFilterBar(filter: $filter)
                 Spacer()
-                Button("Import CSV…") { importBudgets() }
+                DataMenu(what: "budgets", columns: "Entity, Year, Category, Line Item, Allocated, Notes", canImport: store.isFinanceAdmin, templateName: "budget-template.csv",
+                         template: { budgetTemplate() }, importText: { importBudgets($0) }, export: { exportBudgets() })
                 Button { startNew() } label: { Label("New Budget", systemImage: "plus") }
                     .buttonStyle(.borderedProminent).disabled(!store.isFinanceAdmin || store.data.entities.isEmpty)
             }
@@ -201,34 +273,59 @@ struct BudgetsView: View {
                          category: store.data.finance.categories.first ?? "General", lineItems: [BudgetLine(name: "General", allocated: 0)])
     }
 
-    /// CSV columns: Entity, Year, Category, Line Item, Allocated, Notes. Rows with the same
-    /// entity/year/category become one budget.
-    private func importBudgets() {
-        let p = NSOpenPanel()
-        p.allowedContentTypes = [.commaSeparatedText]
-        p.message = "CSV columns: Entity, Year, Category, Line Item, Allocated, Notes"
-        guard p.runModal() == .OK, let url = p.url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        let rows = CSVTaskImporter.parseCSV(text).dropFirst()
-        var count = 0
-        for r in rows where r.count >= 5 {
-            let ename = r[0].trimmingCharacters(in: .whitespaces)
-            guard let year = Int(r[1].trimmingCharacters(in: .whitespaces)), let amount = Double(r[4].replacingOccurrences(of: ",", with: "")) else { continue }
+    private func budgetTemplate() -> String {
+        let y = Calendar.current.component(.year, from: Date())
+        let cat = store.data.finance.categories.first ?? "IT"
+        return ["Entity,Year,Category,Line Item,Allocated,Notes",
+                "Finance Dept,\(y),\(csvEscape(cat)),Laptops,50000,Replacement cycle",
+                "Finance Dept,\(y),\(csvEscape(cat)),Software licences,12000,",
+                "Operations,\(y),\(csvEscape(store.data.finance.categories.dropFirst().first ?? "Facilities")),Cleaning,30000,"].joined(separator: "\n")
+    }
+
+    /// Columns: Entity, Year, Category, Line Item, Allocated, Notes. Rows with the same
+    /// entity/year/category land in one budget; a line that already exists there is updated.
+    private func importBudgets(_ text: String) {
+        guard store.isFinanceAdmin else { store.lastError = "Only owners and admins can import budgets."; return }
+        var added = 0, updated = 0, skipped = 0
+        for r in csvRecords(text) {
+            let ename = csvField(r, "entity", "department"), cat = csvField(r, "category")
+            guard !ename.isEmpty, !cat.isEmpty, let year = Int(csvField(r, "year")), (2000...2100).contains(year),
+                  let amount = csvNumber(csvField(r, "allocated", "amount", "budget")), amount >= 0 else { skipped += 1; continue }
             var ent = store.data.entities.first { $0.name.caseInsensitiveCompare(ename) == .orderedSame }
             if ent == nil { ent = FinEntity(name: ename); store.data.entities.append(ent!) }
-            let cat = r[2].trimmingCharacters(in: .whitespaces)
-            if let i = store.data.budgets.firstIndex(where: { $0.entityId == ent!.id && $0.year == year && $0.category == cat }) {
-                store.data.budgets[i].lineItems.append(BudgetLine(name: r[3], allocated: amount, notes: r.count > 5 ? r[5] : ""))
+            let lineName = csvField(r, "line item", "line", "item").isEmpty ? "General" : csvField(r, "line item", "line", "item")
+            let notes = csvField(r, "notes")
+            if store.data.budgets.firstIndex(where: { $0.entityId == ent!.id && $0.year == year && $0.category == cat }) == nil {
+                store.data.budgets.append(Budget(entityId: ent!.id, year: year, category: cat, lineItems: []))
+            }
+            let bi = store.data.budgets.firstIndex(where: { $0.entityId == ent!.id && $0.year == year && $0.category == cat })!
+            if let li = store.data.budgets[bi].lineItems.firstIndex(where: { $0.name.caseInsensitiveCompare(lineName) == .orderedSame }) {
+                store.data.budgets[bi].lineItems[li].allocated = amount
+                if !notes.isEmpty { store.data.budgets[bi].lineItems[li].notes = notes }
+                updated += 1
             } else {
-                store.data.budgets.append(Budget(entityId: ent!.id, year: year, category: cat, lineItems: [BudgetLine(name: r[3], allocated: amount, notes: r.count > 5 ? r[5] : "")]))
+                store.data.budgets[bi].lineItems.append(BudgetLine(name: lineName, allocated: amount, notes: notes))
+                added += 1
             }
             var s = store.data.finance
             if !s.years.contains(year) { s.years.append(year) }
             if !s.categories.contains(cat) { s.categories.append(cat) }
             store.data.financeSettings = [s]
-            count += 1
         }
-        store.audit("Imported budgets", "\(count) line items")
-        store.lastError = "Imported \(count) budget line item(s)."
+        if added + updated > 0 { store.audit("Imported budgets", "\(added) line(s) added, \(updated) updated") }
+        store.lastError = "\(added) budget line(s) added, \(updated) updated" + (skipped > 0 ? ", \(skipped) row(s) skipped (need Entity, Year, Category, Allocated)." : ".")
+    }
+
+    private func exportBudgets() {
+        var lines = ["Entity,Year,Category,Line Item,Allocated,Spent,Committed,Pending,Balance,Notes"]
+        for b in store.data.budgets {
+            for l in b.lineItems {
+                let f = store.figures(budget: b.id, line: l.id)
+                lines.append([csvEscape(store.entity(b.entityId)?.name ?? ""), String(b.year), csvEscape(b.category), csvEscape(l.name), String(l.allocated),
+                              String(f.spent), String(f.committed), String(f.pending), String(f.balance), csvEscape(l.notes)].joined(separator: ","))
+            }
+        }
+        saveText(lines.joined(separator: "\n"), name: "budgets.csv")
     }
 }
 
@@ -641,6 +738,8 @@ struct CatalogView: View {
                     }
                     .frame(width: 180)
                     Spacer()
+                    DataMenu(what: "catalog items", columns: "Name, Category, Unit price, Unit, Supplier", canImport: store.isFinanceAdmin || store.cloud.canWrite, templateName: "catalog-template.csv",
+                             template: { catalogTemplate() }, importText: { importCatalog($0) }, export: { exportCatalog() })
                     Button { newItem = CatalogItem(name: "", category: store.data.finance.itemCategories.first ?? "", addedBy: store.data.currentUserId) } label: {
                         Label(store.isFinanceAdmin ? "Add item" : "Request new item", systemImage: "plus")
                     }
@@ -743,6 +842,49 @@ struct CatalogView: View {
             store.audit("Catalog item \(s)", store.data.catalog[i].name)
         }
     }
+
+    private func catalogTemplate() -> String {
+        let cats = store.data.finance.itemCategories
+        return ["Name,Category,Unit price,Unit,Supplier",
+                "A4 copy paper 80gsm (box of 5 reams),\(csvEscape(cats.first ?? "Stationery")),95,box,Office Depot",
+                "\"Laptop, 14-inch, 16 GB\",\(csvEscape(cats.dropFirst().first ?? "IT Equipment")),4200,pcs,Dell",
+                "Hand sanitiser 500 ml,\(csvEscape(cats.dropFirst(3).first ?? "Cleaning")),18.5,bottle,Cleanco"].joined(separator: "\n")
+    }
+
+    /// Bulk upload from the template: an item with the same name + supplier is updated, otherwise
+    /// added (approved for admins, awaiting approval for everyone else).
+    private func importCatalog(_ text: String) {
+        var added = 0, updated = 0, skipped = 0
+        var newCats: [String] = []
+        for r in csvRecords(text) {
+            let name = csvField(r, "name", "item", "product", "description")
+            guard !name.isEmpty, let price = csvNumber(csvField(r, "unit price", "price")), price >= 0 else { skipped += 1; continue }
+            let supplier = csvField(r, "supplier", "vendor")
+            let category = csvField(r, "category").isEmpty ? (store.data.finance.itemCategories.first ?? "Other") : csvField(r, "category")
+            let unit = csvField(r, "unit", "uom").isEmpty ? "pcs" : csvField(r, "unit", "uom")
+            if !store.data.finance.itemCategories.contains(category) && !newCats.contains(category) { newCats.append(category) }
+            if let i = store.data.catalog.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.supplier.caseInsensitiveCompare(supplier) == .orderedSame }) {
+                store.data.catalog[i].category = category; store.data.catalog[i].unitPrice = price; store.data.catalog[i].unit = unit
+                if store.isFinanceAdmin { store.data.catalog[i].status = "approved" }
+                updated += 1
+            } else {
+                store.requestCatalogItem(CatalogItem(name: name, category: category, unitPrice: price, unit: unit, supplier: supplier, addedBy: store.data.currentUserId))
+                added += 1
+            }
+        }
+        if !newCats.isEmpty && store.isFinanceAdmin { var s = store.data.finance; s.itemCategories += newCats; store.data.financeSettings = [s] }
+        if added + updated > 0 { store.audit("Imported catalog", "\(added) added, \(updated) updated") }
+        store.lastError = "\(added) added, \(updated) updated" + (skipped > 0 ? ", \(skipped) row(s) skipped (no name or price)" : "") + (!store.isFinanceAdmin && added > 0 ? ". New items wait for admin approval." : ".")
+    }
+
+    private func exportCatalog() {
+        var lines = ["Name,Category,Unit price,Unit,Supplier,Status,Added by,Added"]
+        for c in store.data.catalog {
+            lines.append([csvEscape(c.name), csvEscape(c.category), String(c.unitPrice), csvEscape(c.unit), csvEscape(c.supplier), c.status,
+                          csvEscape(store.member(c.addedBy)?.name ?? ""), c.addedDate.formatted(isoDay)].joined(separator: ","))
+        }
+        saveText(lines.joined(separator: "\n"), name: "catalog.csv")
+    }
 }
 
 struct CatalogItemEditor: View {
@@ -795,7 +937,8 @@ struct ContractsView: View {
                 }
                 .frame(width: 200)
                 Spacer()
-                Button("Export CSV") { export() }
+                DataMenu(what: "contracts", columns: "Title, Supplier, Type, Entity, Value, Start, End, Auto renew, Contact, Email, Phone, Notes", canImport: store.isFinanceAdmin || store.cloud.canWrite,
+                         templateName: "contracts-template.csv", template: { template() }, importText: { importContracts($0) }, export: { export() })
                 Button { editing = Contract(title: "", supplier: "", type: store.data.finance.contractTypes.first ?? "", startDate: Date(), endDate: Date().adding(days: 365)) } label: { Label("New Contract", systemImage: "plus") }
                     .buttonStyle(.borderedProminent)
             }
@@ -823,11 +966,46 @@ struct ContractsView: View {
         .sheet(item: $editing) { c in ContractEditor(contract: c) }
     }
 
+    private func template() -> String {
+        let y = Calendar.current.component(.year, from: Date())
+        let types = store.data.finance.contractTypes
+        return ["Title,Supplier,Type,Entity,Value,Start,End,Auto renew,Contact,Email,Phone,Notes",
+                "Cleaning services HQ,Cleanco,\(csvEscape(types.first ?? "Service")),\(csvEscape(store.data.entities.first?.name ?? "Operations")),120000,\(y)-01-01,\(y)-12-31,Yes,Sara Ali,sara@cleanco.example,+971 50 000 0000,Monthly invoicing",
+                "Printer fleet lease,Xerox,\(csvEscape(types.dropFirst(3).first ?? "Lease")),,36000,\(y)-03-01,\(y + 2)-02-28,No,,,,Whole organization"].joined(separator: "\n")
+    }
+
+    /// Bulk upload from the template: a contract with the same Title + Supplier is updated, otherwise added.
+    private func importContracts(_ text: String) {
+        var added = 0, updated = 0, skipped = 0
+        var newTypes: [String] = []
+        for r in csvRecords(text) {
+            let title = csvField(r, "title", "contract", "name")
+            guard !title.isEmpty, let start = csvDate(csvField(r, "start", "start date", "from")), let end = csvDate(csvField(r, "end", "end date", "to", "expiry")), end >= start else { skipped += 1; continue }
+            let supplier = csvField(r, "supplier", "vendor")
+            let type = csvField(r, "type").isEmpty ? (store.data.finance.contractTypes.first ?? "Service") : csvField(r, "type")
+            if !store.data.finance.contractTypes.contains(type) && !newTypes.contains(type) { newTypes.append(type) }
+            let entityName = csvField(r, "entity", "department")
+            let entity = entityName.isEmpty ? nil : store.data.entities.first { $0.name.caseInsensitiveCompare(entityName) == .orderedSame }
+            let value = csvNumber(csvField(r, "value", "amount", "contract value"))
+            let idx = store.data.contracts.firstIndex { $0.title.caseInsensitiveCompare(title) == .orderedSame && $0.supplier.caseInsensitiveCompare(supplier) == .orderedSame }
+            var c = idx.map { store.data.contracts[$0] } ?? Contract(title: title, supplier: supplier, startDate: start, endDate: end)
+            c.title = title; c.supplier = supplier; c.type = type; c.entityId = entity?.id
+            if let value, value >= 0 { c.value = value }
+            c.startDate = start; c.endDate = end
+            c.autoRenew = csvYes(csvField(r, "auto renew", "autorenew", "renews"))
+            c.contact = csvField(r, "contact"); c.email = csvField(r, "email"); c.phone = csvField(r, "phone"); c.notes = csvField(r, "notes")
+            if let idx { store.data.contracts[idx] = c; updated += 1 } else { store.data.contracts.append(c); added += 1 }
+        }
+        if !newTypes.isEmpty && store.isFinanceAdmin { var s = store.data.finance; s.contractTypes += newTypes; store.data.financeSettings = [s] }
+        if added + updated > 0 { store.audit("Imported contracts", "\(added) added, \(updated) updated") }
+        store.lastError = "\(added) contract(s) added, \(updated) updated" + (skipped > 0 ? ", \(skipped) row(s) skipped (need Title, Start and End dates)." : ".")
+    }
+
     private func export() {
         var lines = ["Title,Supplier,Type,Entity,Value,Start,End,Auto renew,Status,Contact,Email,Phone,Notes"]
         for c in store.data.contracts {
             lines.append([csvEscape(c.title), csvEscape(c.supplier), csvEscape(c.type), csvEscape(store.entity(c.entityId)?.name ?? ""), String(c.value),
-                          c.startDate.formatted(.iso8601.year().month().day()), c.endDate.formatted(.iso8601.year().month().day()),
+                          c.startDate.formatted(isoDay), c.endDate.formatted(isoDay),
                           c.autoRenew ? "Yes" : "No", c.status(), csvEscape(c.contact), csvEscape(c.email), csvEscape(c.phone), csvEscape(c.notes)].joined(separator: ","))
         }
         saveText(lines.joined(separator: "\n"), name: "contracts.csv")
