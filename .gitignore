@@ -9,7 +9,9 @@ web/.wrangler/
 .dev.vars
 *.env
 .env*
-*.sql
+# Database dumps only; schema migrations in web/migrations are source code and must be committed.
+backups/
+*.dump.sql
 *.pem
 *.key
 

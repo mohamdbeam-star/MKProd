@@ -5,9 +5,12 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 PORT=${PORT:-8799}
 WORK=$(mktemp -d)
-trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"' EXIT
+CREATED_SCHEMA=0
+trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$WORK"; [ "$CREATED_SCHEMA" = 1 ] && rm -f web/migrations/0001_init.sql' EXIT
 
 (cd web && [ -d node_modules ] || npm ci --silent)
+# Until the original migrations are committed, use the reconstructed schema (removed again on exit).
+if [ ! -f web/migrations/0001_init.sql ]; then cp Tests/api/schema_reconstructed.sql web/migrations/0001_init.sql; CREATED_SCHEMA=1; fi
 (cd web && CI=1 npx wrangler d1 migrations apply mkprod --local --persist-to "$WORK/d1" >/dev/null)
 node Tests/smtp_sink.mjs $((PORT + 1)) "$WORK/mail" >"$WORK/sink.log" 2>&1 &
 (cd web && exec env CI=1 npx wrangler dev --port "$PORT" --ip 127.0.0.1 --persist-to "$WORK/d1" \
