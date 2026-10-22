@@ -136,6 +136,7 @@ struct CloudSettingsView: View {
                 } header: { Text("3 · Shared workspace") }
 
                 SecuritySection()
+                AppsSection()
             }
 
             if cloud.isConnected {
@@ -316,7 +317,10 @@ struct TeamSection: View {
                     }
                 }
                 HStack {
-                    TextField("teammate@company.com", text: $inviteEmail)
+                    Text("Invite:").foregroundStyle(.secondary)
+                    TextField("Email address of the person to invite", text: $inviteEmail)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
                     Picker("", selection: $inviteRole) {
                         Text("Admin").tag("admin"); Text("Member").tag("member"); Text("Viewer").tag("viewer")
                     }
@@ -437,4 +441,48 @@ func confirm(_ title: String, _ message: String, ok: String) -> Bool {
     a.addButton(withTitle: ok)
     a.addButton(withTitle: "Cancel")
     return a.runModal() == .alertFirstButtonReturn
+}
+
+
+/// Download links for the other platforms, read from the server (GitHub Releases).
+struct AppsSection: View {
+    @Environment(Store.self) private var store
+    @State private var apps: [(platform: String, version: String, url: URL, name: String)] = []
+    @State private var note: String?
+
+    var body: some View {
+        Section {
+            if apps.isEmpty {
+                Text(note ?? "Loading…").font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(apps, id: \.platform) { a in
+                HStack {
+                    Image(systemName: a.platform == "windows" ? "pc" : a.platform == "android" ? "smartphone" : "laptopcomputer")
+                    Text(a.platform == "windows" ? "Windows" : a.platform == "android" ? "Android" : "Mac")
+                    Text("v\(a.version)").foregroundStyle(.secondary)
+                    Spacer()
+                    Link("Download \(a.name)", destination: a.url)
+                }
+            }
+            Text("Same workspace and account on every device. Windows and Android need no admin rights to install.")
+                .font(.caption).foregroundStyle(.secondary)
+        } header: { Text("Apps for your other devices") }
+        .task {
+            do {
+                let obj = try await store.cloud.client.call("GET", "/api/apps")
+                var out: [(String, String, URL, String)] = []
+                for a in obj["apps"] as? [[String: Any]] ?? [] {
+                    guard let platform = a["platform"] as? String, let version = a["version"] as? String,
+                          let assets = a["assets"] as? [[String: Any]] else { continue }
+                    // Prefer the installer/dmg/apk over zip and portable variants.
+                    let preferred = assets.first { ($0["name"] as? String ?? "").hasSuffix(".dmg") || ($0["name"] as? String ?? "").hasSuffix(".apk") || (($0["name"] as? String ?? "").hasSuffix(".exe") && !($0["name"] as? String ?? "").contains("portable")) } ?? assets.first
+                    if let p = preferred, let u = (p["url"] as? String).flatMap(URL.init), let n = p["name"] as? String { out.append((platform, version, u, n)) }
+                }
+                apps = out.map { (platform: $0.0, version: $0.1, url: $0.2, name: $0.3) }
+                if apps.isEmpty { note = (obj["error"] as? String) ?? "No downloads published yet." }
+            } catch {
+                note = error.localizedDescription
+            }
+        }
+    }
 }

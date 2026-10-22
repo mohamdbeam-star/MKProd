@@ -24,6 +24,9 @@ struct SidebarView: View {
         @Bindable var store = store
         List(selection: $store.selection) {
             Section {
+                if store.cloud.isSignedIn && store.cloud.workspaces.count > 1 {
+                    WorkspaceSwitcher()
+                }
                 Button { store.showCommandPalette = true } label: {
                     HStack {
                         Image(systemName: "magnifyingglass")
@@ -265,5 +268,40 @@ struct SidebarView: View {
         case .list(let id): if let i = store.data.lists.firstIndex(where: { $0.id == id }) { store.data.lists[i].name = name }
         default: break
         }
+    }
+}
+
+
+/// Switches between the shared workspaces the signed-in person belongs to. Each switch loads
+/// that workspace from the server (a backup of the current local copy is written first).
+struct WorkspaceSwitcher: View {
+    @Environment(Store.self) private var store
+    @State private var switching = false
+
+    var body: some View {
+        Menu {
+            ForEach(store.cloud.workspaces) { ws in
+                Button {
+                    guard ws.id != store.cloud.workspaceId else { return }
+                    switching = true
+                    Task { @MainActor in
+                        do { try await store.cloud.join(ws) } catch { store.lastError = error.localizedDescription }
+                        switching = false
+                    }
+                } label: {
+                    if ws.id == store.cloud.workspaceId { Label(ws.name, systemImage: "checkmark") } else { Text("\(ws.name)  ·  \(ws.role)") }
+                }
+            }
+        } label: {
+            HStack {
+                Image(systemName: "building.2")
+                Text(store.data.workspaceName).fontWeight(.semibold).lineLimit(1)
+                Spacer()
+                if switching { ProgressView().controlSize(.mini) } else { Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+        }
+        .menuStyle(.borderlessButton)
+        .task { try? await store.cloud.refreshWorkspaces() }
     }
 }

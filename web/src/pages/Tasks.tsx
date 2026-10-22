@@ -62,6 +62,23 @@ export function toggleDone(engine: SyncEngine, t: Task) {
   if (target) updateTask(engine, t.id, (x) => { x.statusId = target.id; });
 }
 
+/** Removes a list with every task in it (mirrors Store.deleteList on the Mac). */
+export function deleteList(engine: SyncEngine, id: ID) {
+  for (const t of engine.list('tasks').filter((t) => t.listId === id)) engine.remove('tasks', t.id);
+  engine.remove('lists', id);
+}
+
+export function deleteFolder(engine: SyncEngine, id: ID) {
+  for (const l of engine.list('lists').filter((l) => l.folderId === id)) deleteList(engine, l.id);
+  engine.remove('folders', id);
+}
+
+export function deleteSpace(engine: SyncEngine, id: ID) {
+  for (const l of engine.list('lists').filter((l) => l.spaceId === id)) deleteList(engine, l.id);
+  for (const f of engine.list('folders').filter((f) => f.spaceId === id)) engine.remove('folders', f.id);
+  engine.remove('spaces', id);
+}
+
 export function trashTask(engine: SyncEngine, id: ID) {
   const now = iso();
   for (const c of engine.list('tasks').filter((x) => x.parentId === id)) trashTask(engine, c.id);

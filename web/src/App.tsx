@@ -4,13 +4,14 @@ import { ApiError, Session, SessionUser, SyncEngine, WorkspaceInfo, api, idbClea
 import { Bytes, newKeyPair, newRecoveryCode, passwordKeys, recoveryKeys, sealScalar, unlockKeyPair, open as openSealed } from './crypto';
 import { Finance } from './finance';
 import { AppCtx, Avatars, Modal, useApp } from './ui';
-import { HomePage, InboxPage, TaskDrawer, TasksPage } from './pages/Tasks';
+import { HomePage, InboxPage, TaskDrawer, TasksPage, deleteFolder, deleteList, deleteSpace } from './pages/Tasks';
 import { ChatPage, DocsPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
 import {
   AlertsPage, AnalyticsPage, AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceOverview, FinanceSettingsPage,
   OrdersPage, ReportsPage, SavingsPage,
 } from './pages/Finance';
 import { SharePage } from './pages/Share';
+import { AppsPage } from './pages/Apps';
 import { useInstallPrompt } from './pwa';
 
 const USER_KEY = 'mkprod.user';
@@ -30,6 +31,8 @@ async function restoreSession(): Promise<Session | null> {
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  // True when the person asked for the picker (switch / create / join): then it must not auto-open a workspace.
+  const [manualPick, setManualPick] = useState(false);
   const isShare = location.pathname.startsWith('/share/');
   useEffect(() => { if (!isShare) restoreSession().then(setSession); }, []);
 
@@ -46,8 +49,8 @@ export default function App() {
   if (isShare) return <SharePage />;
   if (session === undefined) return null;
   if (!session) return <AuthScreen onSession={setSession} />;
-  if (!workspace) return <WorkspacePicker session={session} onPick={(w) => { localStorage.setItem(WS_KEY, w.id); setWorkspace(w); }} onSignOut={signOut} />;
-  return <Workspace key={workspace.id} session={session} workspace={workspace} onSwitch={() => { localStorage.removeItem(WS_KEY); setWorkspace(null); }} onSignOut={signOut} />;
+  if (!workspace) return <WorkspacePicker session={session} manual={manualPick} onPick={(w) => { localStorage.setItem(WS_KEY, w.id); setManualPick(false); setWorkspace(w); }} onSignOut={signOut} />;
+  return <Workspace key={workspace.id} session={session} workspace={workspace} onSwitch={() => { localStorage.removeItem(WS_KEY); setManualPick(true); setWorkspace(null); }} onSwitchTo={(w) => { localStorage.setItem(WS_KEY, w.id); location.hash = ''; setWorkspace(w); }} onSignOut={signOut} />;
 }
 
 // ---------------------------------------------------------------- auth
@@ -242,7 +245,7 @@ function RecoveryCodeScreen({ code, onDone }: { code: string; onDone: () => void
   );
 }
 
-function WorkspacePicker({ session, onPick, onSignOut }: { session: Session; onPick: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
+function WorkspacePicker({ session, manual, onPick, onSignOut }: { session: Session; manual?: boolean; onPick: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
   const [list, setList] = useState<WorkspaceInfo[] | null>(null);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -252,6 +255,7 @@ function WorkspacePicker({ session, onPick, onSignOut }: { session: Session; onP
     api<{ workspaces: WorkspaceInfo[]; user: { emailVerified?: boolean } }>('/api/me').then((r) => {
       setList(r.workspaces);
       if (r.user.emailVerified === false) { setVerify(true); return; }
+      if (manual) return;
       const last = localStorage.getItem(WS_KEY);
       const w = r.workspaces.find((x) => x.id === last) ?? (r.workspaces.length === 1 ? r.workspaces[0] : undefined);
       if (w) onPick(w);
@@ -305,7 +309,7 @@ function parseHash() {
   return { route: path || 'home', task };
 }
 
-function Workspace({ session, workspace, onSwitch, onSignOut }: { session: Session; workspace: WorkspaceInfo; onSwitch: () => void; onSignOut: () => void }) {
+function Workspace({ session, workspace, onSwitch, onSwitchTo, onSignOut }: { session: Session; workspace: WorkspaceInfo; onSwitch: () => void; onSwitchTo: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
   const engine = useMemo(() => new SyncEngine(session, workspace, onSignOut), [session, workspace]);
   const fin = useMemo(() => new Finance(engine), [engine]);
   const [{ route, task }, setLoc] = useState(parseHash);
@@ -330,7 +334,7 @@ function Workspace({ session, workspace, onSwitch, onSignOut }: { session: Sessi
   const ctx = { engine, fin, go, route, openTask, toast };
   return (
     <AppCtx.Provider value={ctx}>
-      <Shell onSwitch={onSwitch} onSignOut={onSignOut}>
+      <Shell onSwitch={onSwitch} onSwitchTo={onSwitchTo} onSignOut={onSignOut}>
         <Page route={route} />
       </Shell>
       {task && <TaskDrawer id={task} onClose={() => openTask()} />}
@@ -365,19 +369,58 @@ function Page({ route }: { route: string }) {
     case 'reports': return <ReportsPage />;
     case 'audit': return <AuditPage />;
     case 'fsettings': return <FinanceSettingsPage />;
+    case 'apps': return <AppsPage />;
     default: return <HomePage />;
   }
 }
 
-function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; onSwitch: () => void; onSignOut: () => void }) {
-  const { engine, fin, go, route, openTask } = useApp();
+function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.ReactNode; onSwitch: () => void; onSwitchTo: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
+  const { engine, fin, go, route, openTask, toast } = useApp();
   const [open, setOpen] = useState(false);
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [wsMenu, setWsMenu] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number; items: { label: string; danger?: boolean; act: () => void }[] } | null>(null);
+  useEffect(() => { api<{ workspaces: WorkspaceInfo[] }>('/api/me').then((r) => setWorkspaces(r.workspaces)).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!menu && !wsMenu) return;
+    const close = () => { setMenu(null); setWsMenu(false); };
+    window.addEventListener('click', close);
+    window.addEventListener('keydown', close);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', close); };
+  }, [menu, wsMenu]);
+  /** Small context menu, opened by the ⋯ button or a right-click on a sidebar item. */
+  const openMenu = (e: React.MouseEvent, items: { label: string; danger?: boolean; act: () => void }[]) => {
+    e.preventDefault(); e.stopPropagation();
+    setMenu({ x: Math.min(e.clientX, window.innerWidth - 200), y: e.clientY, items });
+  };
+  const rename = (what: string, current: string, save: (v: string) => void) => { const v = prompt(`Rename ${what}`, current); if (v && v.trim() && v.trim() !== current) save(v.trim()); };
+  const spaceMenu = (s: { id: ID; name: string }) => [
+    { label: 'Rename space', act: () => rename('space', s.name, (v) => engine.update('spaces', s.id, (x) => { x.name = v; })) },
+    { label: 'New list', act: () => addList(s.id) },
+    { label: 'Delete space…', danger: true, act: () => {
+      const n = engine.list('lists').filter((l) => l.spaceId === s.id).reduce((a, l) => a + engine.list('tasks').filter((t) => t.listId === l.id).length, 0);
+      if (confirm(`Delete the space "${s.name}" with its lists and ${n} task(s)? This cannot be undone.`)) { deleteSpace(engine, s.id); go('home'); toast('Space deleted'); }
+    } },
+  ];
+  const listMenu = (l: { id: ID; name: string; archived: boolean }) => [
+    { label: 'Rename list', act: () => rename('list', l.name, (v) => engine.update('lists', l.id, (x) => { x.name = v; })) },
+    { label: 'Archive list', act: () => { engine.update('lists', l.id, (x) => { x.archived = true; }); go('home'); } },
+    { label: 'Delete list…', danger: true, act: () => {
+      const n = engine.list('tasks').filter((t) => t.listId === l.id).length;
+      if (confirm(`Delete the list "${l.name}" and its ${n} task(s)? This cannot be undone.`)) { deleteList(engine, l.id); go('home'); toast('List deleted'); }
+    } },
+  ];
+  const folderMenu = (f: { id: ID; name: string }) => [
+    { label: 'Rename folder', act: () => rename('folder', f.name, (v) => engine.update('folders', f.id, (x) => { x.name = v; })) },
+    { label: 'Delete folder…', danger: true, act: () => { if (confirm(`Delete the folder "${f.name}" with its lists and tasks?`)) { deleteFolder(engine, f.id); go('home'); toast('Folder deleted'); } } },
+  ];
   const [search, setSearch] = useState(false);
   const [expanded, setExpanded] = useState<Set<ID>>(new Set());
   const install = useInstallPrompt();
-  const nav = (r: string, icon: string, label: string, badge?: number) => (
-    <div className={`nav ${route === r || route.startsWith(r + '/') ? 'on' : ''}`} onClick={() => { go(r); setOpen(false); }}>
-      <span className="ic">{icon}</span><span className="ellipsis">{label}</span>{badge ? <span className="badge">{badge}</span> : null}
+  const nav = (r: string, icon: string, label: string, badge?: number, items?: { label: string; danger?: boolean; act: () => void }[]) => (
+    <div className={`nav ${route === r || route.startsWith(r + '/') ? 'on' : ''}`} onClick={() => { go(r); setOpen(false); }} onContextMenu={items && engine.canWrite ? (e) => openMenu(e, items) : undefined}>
+      <span className="ic">{icon}</span><span className="ellipsis grow">{label}</span>{badge ? <span className="badge">{badge}</span> : null}
+      {items && engine.canWrite && <button className="btn ghost sm more" title="More" onClick={(e) => openMenu(e, items)}>⋯</button>}
     </div>
   );
   useEffect(() => {
@@ -407,8 +450,22 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
     <div className="app">
       <aside className={`side ${open ? 'open' : ''}`}>
         <div className="side-scroll">
-          <div className="row" style={{ padding: '4px 8px 8px' }}><div className="logo" style={{ width: 28, height: 28, fontSize: 12, borderRadius: 8 }}>MK</div>
-            <div className="grow ellipsis"><strong>{engine.workspace.name}</strong></div></div>
+          <div className="row ws-head" style={{ padding: '4px 8px 8px', position: 'relative' }} onClick={(e) => { e.stopPropagation(); setWsMenu(!wsMenu); }} title="Switch workspace">
+            <div className="logo" style={{ width: 28, height: 28, fontSize: 12, borderRadius: 8 }}>MK</div>
+            <div className="grow ellipsis"><strong>{engine.workspace.name}</strong></div>
+            <span className="small faint">{workspaces.length > 1 ? '⌄' : ''}</span>
+            {wsMenu && (
+              <div className="menu" style={{ left: 8, top: 40, minWidth: 220 }} onClick={(e) => e.stopPropagation()}>
+                <div className="small faint" style={{ padding: '4px 10px' }}>Your workspaces</div>
+                {workspaces.map((w) => (
+                  <div key={w.id} className={`item ${w.id === engine.workspace.id ? 'on' : ''}`} onClick={() => { setWsMenu(false); if (w.id !== engine.workspace.id) onSwitchTo(w); }}>
+                    <span className="grow ellipsis">{w.name}</span><span className="small muted">{w.role}</span>{w.id === engine.workspace.id && <span>✓</span>}
+                  </div>
+                ))}
+                <div className="item" onClick={() => { setWsMenu(false); onSwitch(); }}>＋ Create or join a workspace…</div>
+              </div>
+            )}
+          </div>
           <div className="nav" onClick={() => setSearch(true)}><span className="ic">🔍</span>Search<span className="small faint right">⌘K</span></div>
           {nav('home', '🏠', 'Home')}
           {nav('inbox', '📥', 'Inbox', unread)}
@@ -417,21 +474,22 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
           <h4>Spaces <button className="btn ghost sm right" onClick={addSpace} title="New space">＋</button></h4>
           {engine.list('spaces').map((s) => (
             <div key={s.id}>
-              <div className={`nav ${route === 'space/' + s.id ? 'on' : ''}`}>
+              <div className={`nav ${route === 'space/' + s.id ? 'on' : ''}`} onContextMenu={engine.canWrite ? (e) => openMenu(e, spaceMenu(s)) : undefined}>
                 <span className="ic" onClick={() => setExpanded((x) => { const n = new Set(x); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; })}>{expanded.has(s.id) ? '▾' : '▸'}</span>
                 <span style={{ width: 14, height: 14, borderRadius: 4, background: s.colorHex }} />
                 <span className="grow ellipsis" onClick={() => go('space/' + s.id)}>{s.name}</span>
+                {engine.canWrite && <button className="btn ghost sm more" title="Rename, delete…" onClick={(e) => openMenu(e, spaceMenu(s))}>⋯</button>}
                 <button className="btn ghost sm" title="New list" onClick={() => addList(s.id)}>＋</button>
               </div>
               {expanded.has(s.id) && (
                 <div style={{ paddingLeft: 18 }}>
                   {engine.list('folders').filter((f) => f.spaceId === s.id).map((f) => (
                     <div key={f.id}>
-                      {nav('folder/' + f.id, '📁', f.name)}
-                      <div style={{ paddingLeft: 14 }}>{engine.list('lists').filter((l) => l.folderId === f.id && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, l.sprintStart ? '🏁' : '☰', l.name)}</div>)}</div>
+                      {nav('folder/' + f.id, '📁', f.name, undefined, folderMenu(f))}
+                      <div style={{ paddingLeft: 14 }}>{engine.list('lists').filter((l) => l.folderId === f.id && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, l.sprintStart ? '🏁' : '☰', l.name, undefined, listMenu(l))}</div>)}</div>
                     </div>
                   ))}
-                  {engine.list('lists').filter((l) => l.spaceId === s.id && !l.folderId && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, '☰', l.name)}</div>)}
+                  {engine.list('lists').filter((l) => l.spaceId === s.id && !l.folderId && !l.archived).map((l) => <div key={l.id}>{nav('list/' + l.id, '☰', l.name, undefined, listMenu(l))}</div>)}
                 </div>
               )}
             </div>
@@ -455,6 +513,8 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
           {nav('reports', '📑', 'Reports')}
           {nav('audit', '📜', 'Audit log')}
           {nav('fsettings', '⚙️', 'Finance settings')}
+          <h4>Apps</h4>
+          {nav('apps', '📲', 'Get the apps')}
           {install && <div className="nav install" onClick={() => install()} title="Adds MK Prod to your Start menu / Dock as its own window. No admin rights needed."><span className="ic">⬇</span>Install as an app</div>}
         </div>
         <div className="side-foot">
@@ -483,6 +543,11 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
         <div className="page">{children}</div>
       </main>
       {search && <SearchModal onClose={() => setSearch(false)} onTask={(id) => { setSearch(false); openTask(id); }} />}
+      {menu && (
+        <div className="menu" style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 60 }} onClick={(e) => e.stopPropagation()}>
+          {menu.items.map((it) => <div key={it.label} className={`item ${it.danger ? 'danger' : ''}`} onClick={() => { setMenu(null); it.act(); }}>{it.label}</div>)}
+        </div>
+      )}
     </div>
   );
 
@@ -496,7 +561,7 @@ function title(route: string, engine: SyncEngine) {
   if (p === 'folder') return engine.get('folders', id)?.name ?? 'Folder';
   return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', docs: 'Docs', chat: 'Chat', goals: 'Goals', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
     finance: 'Finance overview', alerts: 'Alerts', budgets: 'Budgets', orders: 'Orders & expenses', approvals: 'My approvals', catalog: 'Shopping catalog', contracts: 'Contracts',
-    savings: 'Savings', analytics: 'Analytics', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings' } as Record<string, string>)[p] ?? 'MK Prod';
+    savings: 'Savings', analytics: 'Analytics', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings', apps: 'Get the apps' } as Record<string, string>)[p] ?? 'MK Prod';
 }
 
 function SearchModal({ onClose, onTask }: { onClose: () => void; onTask: (id: ID) => void }) {

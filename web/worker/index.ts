@@ -24,6 +24,8 @@ interface Env extends SmtpEnv {
   ASSETS: Fetcher;
   FILES?: R2Bucket;
   PBKDF2_ITERATIONS: string;
+  /** Optional: lets /api/apps read releases while the GitHub repository is private. */
+  GITHUB_TOKEN?: string;
 }
 
 type Role = 'owner' | 'admin' | 'member' | 'viewer';
@@ -110,6 +112,7 @@ async function route(c: Ctx, url: URL): Promise<Response> {
   if (p === '/api/me/totp/enable' && m === 'POST') return totpEnable(c, user);
   if (p === '/api/me/totp/disable' && m === 'POST') return totpDisable(c, user);
   if (p === '/api/me/security' && m === 'GET') return securityLog(env, { userId: user.id });
+  if (p === '/api/apps' && m === 'GET') return appDownloads(env);
   if (p === '/api/invites/accept' && m === 'POST') return acceptInvite(c, user);
   if (p === '/api/workspaces' && m === 'POST') return createWorkspace(c, user);
 
@@ -949,6 +952,36 @@ async function fileDelete(c: Ctx, wsId: string, user: User, role: Role, id: stri
   await c.env.DB.prepare('DELETE FROM files WHERE id = ? AND workspace_id = ?').bind(id, wsId).run();
   void user;
   return json({ ok: true });
+}
+
+// ---------------------------------------------------------------- app downloads
+
+const RELEASES_REPO = 'mohamdbeam-star/MKProd';
+const PLATFORMS: [string, string][] = [['mac', 'mac-v'], ['windows', 'windows-v'], ['android', 'android-v']];
+let appsCache: { at: number; body: unknown } | null = null;
+
+/** Latest Mac/Windows/Android builds from the GitHub Releases, for signed-in people. Cached 10 minutes per isolate. */
+async function appDownloads(env: Env): Promise<Response> {
+  if (appsCache && Date.now() - appsCache.at < 10 * 60_000) return json(appsCache.body);
+  interface Rel { tag_name: string; draft: boolean; prerelease: boolean; published_at: string; html_url: string; assets: { name: string; browser_download_url: string; size: number }[] }
+  let rels: Rel[] = [];
+  let error: string | undefined;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=30`, {
+      headers: { 'User-Agent': 'mkprod-worker', Accept: 'application/vnd.github+json', ...(env.GITHUB_TOKEN ? { Authorization: `Bearer ${env.GITHUB_TOKEN}` } : {}) },
+    });
+    if (res.ok) rels = await res.json<Rel[]>();
+    else error = res.status === 404 ? 'The releases are not public yet.' : `GitHub answered ${res.status}`;
+  } catch (e) { error = (e as Error).message; }
+  const apps = PLATFORMS.map(([platform, prefix]) => {
+    const r = rels.filter((x) => x.tag_name.startsWith(prefix) && !x.draft).sort((a, b) => b.published_at.localeCompare(a.published_at))[0];
+    return r
+      ? { platform, version: r.tag_name.slice(prefix.length), publishedAt: r.published_at, page: r.html_url, assets: r.assets.map((a) => ({ name: a.name, url: a.browser_download_url, size: a.size })) }
+      : { platform, version: null };
+  });
+  const body = { apps, releases: `https://github.com/${RELEASES_REPO}/releases`, ...(error ? { error } : {}) };
+  if (!error) appsCache = { at: Date.now(), body };
+  return json(body);
 }
 
 // ---------------------------------------------------------------- email notifications

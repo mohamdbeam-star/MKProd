@@ -13,7 +13,7 @@ It's an original implementation: project management (spaces, lists, tasks, docs,
 - **Mac:** [Releases → MK Prod for Mac](https://github.com/mohamdbeam-star/MKProd/releases): open the `.dmg`, drag MK Prod to Applications. First launch: System Settings → Privacy & Security → **Open Anyway** (the app is not notarized with Apple). Universal (Apple Silicon + Intel), macOS 14+, Liquid Glass on macOS 26.
 - **Windows:** [Releases → MK Prod for Windows](https://github.com/mohamdbeam-star/MKProd/releases): per-user setup or portable `.exe`, no admin rights. See [WINDOWS.md](WINDOWS.md).
 - **Android:** [Releases → MK Prod for Android](https://github.com/mohamdbeam-star/MKProd/releases): `.apk` for Android 7+, phones, tablets and foldables. See [ANDROID.md](ANDROID.md).
-- **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar.
+- **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar. Signed-in people find all downloads under **Get the apps** in the sidebar (Mac: Settings → Cloud & Team).
 
 All three installers are built by GitHub Actions (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) from the sources here; bump `VERSION` (Mac, Android) or `desktop/package.json` (Windows) and push to publish a new release.
 
