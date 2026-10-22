@@ -70,7 +70,7 @@ struct FinanceDashboardView: View {
                         .chartForegroundStyleScale(["Budget": Color.indigo.opacity(0.5), "Spent": Color.green, "Committed": Color.blue])
                     }
                     card("Spend by category") {
-                        let cats = Dictionary(grouping: budgets, by: \.category).map { (k, v) in (k, v.map { store.figures(budget: $0) }.reduce(LineFigures(), +)) }.sorted { $0.1.spent + $0.1.committed > $1.1.spent + $1.1.committed }
+                        let cats = categoryTotals(budgets)
                         Chart(cats, id: \.0) { c in
                             SectorMark(angle: .value("Spent", max(c.1.spent + c.1.committed, 0.0001)), innerRadius: .ratio(0.55), angularInset: 1).foregroundStyle(by: .value("Category", c.0))
                         }
@@ -78,8 +78,7 @@ struct FinanceDashboardView: View {
                 }
                 HStack(alignment: .top, spacing: 16) {
                     card("Monthly spend") {
-                        let monthly = Dictionary(grouping: orders.filter(isOutgoing)) { Calendar.current.dateInterval(of: .month, for: $0.requestedDate)!.start }
-                            .map { ($0.key, $0.value.reduce(0) { $0 + $1.amount }) }.sorted { $0.0 < $1.0 }
+                        let monthly = monthlySpend(orders)
                         Chart(monthly, id: \.0) { m in BarMark(x: .value("Month", m.0, unit: .month), y: .value("Spend", m.1)).foregroundStyle(Color.accentColor.gradient) }
                     }
                     card("Alerts") {
@@ -92,13 +91,40 @@ struct FinanceDashboardView: View {
                     }
                 }
                 card("Top suppliers") {
-                    let sup = Dictionary(grouping: orders.filter { isOutgoing($0) && !$0.supplier.isEmpty }, by: \.supplier).map { ($0.key, $0.value.reduce(0) { $0 + $1.amount }) }.sorted { $0.1 > $1.1 }.prefix(8)
-                    Chart(Array(sup), id: \.0) { s in BarMark(x: .value("Amount", s.1), y: .value("Supplier", s.0)).foregroundStyle(Color.purple.gradient) }
+                    let sup = topSuppliers(orders)
+                    Chart(sup, id: \.0) { s in BarMark(x: .value("Amount", s.1), y: .value("Supplier", s.0)).foregroundStyle(Color.purple.gradient) }
                 }
             }
             .padding(20)
         }
         .navigationTitle("Finance Overview")
+    }
+
+    // Pre-computed outside the view builders: these expressions are too much for the type checker inline.
+    private func categoryTotals(_ budgets: [Budget]) -> [(String, LineFigures)] {
+        let grouped: [String: [Budget]] = Dictionary(grouping: budgets, by: \.category)
+        var out: [(String, LineFigures)] = []
+        for (category, bs) in grouped {
+            var f = LineFigures()
+            for b in bs { f = f + store.figures(budget: b) }
+            out.append((category, f))
+        }
+        return out.sorted { ($0.1.spent + $0.1.committed) > ($1.1.spent + $1.1.committed) }
+    }
+
+    private func monthlySpend(_ orders: [PurchaseOrder]) -> [(Date, Double)] {
+        var totals: [Date: Double] = [:]
+        for o in orders where isOutgoing(o) {
+            let month = Calendar.current.dateInterval(of: .month, for: o.requestedDate)?.start ?? o.requestedDate
+            totals[month, default: 0] += o.amount
+        }
+        return totals.map { ($0.key, $0.value) }.sorted { $0.0 < $1.0 }
+    }
+
+    private func topSuppliers(_ orders: [PurchaseOrder]) -> [(String, Double)] {
+        var totals: [String: Double] = [:]
+        for o in orders where isOutgoing(o) && !o.supplier.isEmpty { totals[o.supplier, default: 0] += o.amount }
+        return Array(totals.map { ($0.key, $0.value) }.sorted { $0.1 > $1.1 }.prefix(8))
     }
 
     private func entityBars(_ budgets: [Budget]) -> [Bar] {
