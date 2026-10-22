@@ -35,10 +35,16 @@ Nothing else to do. Updates arrive automatically the next time the app opens onl
   normal browser tab with identical features; only the separate window and Start-menu entry are
   lost.
 
-## Why not a classic .exe?
+## The .exe (alternative)
 
-A traditional installer would mean a second code base to keep in step with the website and the
-Mac app, and would need Windows machines to build, sign and test on. The installed web app gives
-the same result with none of that. If a signed `.exe` is ever required (for example by an IT
-policy), the website can be wrapped as a desktop app without changing any feature code; ask for
-it when the need arises.
+If you prefer a classic program: **github.com/mohamdbeam-star/MKProd → Releases → MK Prod for
+Windows**.
+
+- `MK-Prod-<version>-win-x64.exe`: one-click setup for the current user. No admin rights; it
+  installs under your own profile with Start-menu and desktop shortcuts.
+- `MK-Prod-<version>-portable.exe`: nothing to install; runs from any folder or USB stick.
+
+Both are a thin window around the same web app, so features are identical and always current.
+Windows SmartScreen shows "Windows protected your PC" the first time because the file isn't
+code-signed: click **More info → Run anyway**. (A code-signing certificate removes the warning;
+see `desktop/README.md`.)

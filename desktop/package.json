@@ -1,0 +1,42 @@
+{
+  "name": "mkprod-desktop",
+  "productName": "MK Prod",
+  "version": "1.0.0",
+  "description": "MK Prod for Windows: the team workspace in its own window.",
+  "author": "MK Prod",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "build:win:portable": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "38.2.1",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "com.mkoussa.mkprod",
+    "productName": "MK Prod",
+    "artifactName": "MK-Prod-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "package.json"],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": { "artifactName": "MK-Prod-${version}-portable.exe" }
+  }
+}

@@ -413,6 +413,39 @@ export function CatalogPage() {
   const lines = cart.map((l) => ({ l, c: engine.get('catalog', l.id)! })).filter((x) => x.c);
   const total = lines.reduce((a, x) => a + x.l.qty * x.c.unitPrice, 0);
   const setStatus = (c: CatalogItem, status: string) => { engine.put('catalog', { ...c, status }); fin.audit(`Catalog item ${status}`, c.name); };
+  const { toast } = useApp();
+
+  /** Bulk upload from the Excel/CSV template: existing items (same name + supplier) are updated, new ones added. */
+  const importFile = async (file: File) => {
+    const wb = XLSX.read(await file.arrayBuffer());
+    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(wb.Sheets[wb.SheetNames[0]]);
+    const col = (r: Record<string, any>, ...names: string[]) => { const k = Object.keys(r).find((x) => names.includes(x.trim().toLowerCase())); return k ? r[k] : undefined; };
+    const existing = engine.list('catalog');
+    let added = 0, updated = 0, skipped = 0;
+    const newCats = new Set<string>();
+    for (const r of rows) {
+      const name = String(col(r, 'name', 'item', 'product', 'description') ?? '').trim();
+      const price = Number(String(col(r, 'unit price', 'price', 'unitprice') ?? '').replace(/[^0-9.-]/g, ''));
+      if (!name || !(price >= 0)) { skipped++; continue; }
+      const supplier = String(col(r, 'supplier', 'vendor') ?? '').trim();
+      const category = String(col(r, 'category') ?? '').trim() || fin.settings.itemCategories[0] || 'Other';
+      const unit = String(col(r, 'unit', 'uom') ?? '').trim() || 'pcs';
+      if (!fin.settings.itemCategories.includes(category)) newCats.add(category);
+      const match = existing.find((c) => c.name.toLowerCase() === name.toLowerCase() && c.supplier.toLowerCase() === supplier.toLowerCase());
+      if (match) { engine.put('catalog', { ...match, category, unitPrice: price, unit, status: fin.isAdmin ? 'approved' : match.status }); updated++; }
+      else { engine.put('catalog', { id: uid(), name, category, unitPrice: price, unit, supplier, status: fin.isAdmin ? 'approved' : 'pending', addedBy: engine.me, addedDate: iso() }); added++; }
+    }
+    if (newCats.size && fin.isAdmin) fin.saveSettings((s) => { s.itemCategories = [...s.itemCategories, ...newCats]; });
+    fin.audit('Imported catalog', `${file.name}: ${added} added, ${updated} updated`);
+    toast(`${added} added, ${updated} updated${skipped ? `, ${skipped} row(s) skipped (no name or price)` : ''}${!fin.isAdmin && added ? '. New items wait for admin approval.' : ''}`);
+  };
+  const template = () => download('catalog-template.xlsx', [
+    { Name: 'A4 copy paper 80gsm (box of 5 reams)', Category: fin.settings.itemCategories[0] ?? 'Stationery', 'Unit price': 95, Unit: 'box', Supplier: 'Office Depot' },
+    { Name: 'Laptop, 14-inch, 16 GB', Category: fin.settings.itemCategories[1] ?? 'IT Equipment', 'Unit price': 4200, Unit: 'pcs', Supplier: 'Dell' },
+    { Name: 'Hand sanitiser 500 ml', Category: fin.settings.itemCategories[3] ?? 'Cleaning', 'Unit price': 18.5, Unit: 'bottle', Supplier: 'Cleanco' },
+  ], 'Catalog');
+  const exportAll = () => download('catalog.xlsx', engine.list('catalog').map((c) => ({ Name: c.name, Category: c.category, 'Unit price': c.unitPrice, Unit: c.unit, Supplier: c.supplier, Status: c.status, 'Added by': member(engine, c.addedBy)?.name ?? '', Added: c.addedDate.slice(0, 10) })), 'Catalog');
+
   return (
     <div className="row" style={{ alignItems: 'flex-start', gap: 14 }}>
       <div className="grow col">
@@ -420,6 +453,9 @@ export function CatalogPage() {
           <h1 className="grow">Shopping catalog</h1>
           <input className="input" placeholder="Search catalog" value={q} onChange={(e) => setQ(e.target.value)} />
           <select className="input" value={cat} onChange={(e) => setCat(e.target.value)}><option value="">All categories</option>{fin.settings.itemCategories.map((x) => <option key={x}>{x}</option>)}</select>
+          <button className="btn" title="Excel file with the expected columns and three example rows" onClick={template}>⬇ Template</button>
+          {engine.canWrite && <label className="btn" title="Upload many products at once from Excel or CSV (columns: Name, Category, Unit price, Unit, Supplier)">⬆ Import Excel<input type="file" accept=".xlsx,.xls,.csv" hidden onChange={(ev) => { const f = ev.target.files?.[0]; if (f) importFile(f); ev.target.value = ''; }} /></label>}
+          <button className="btn" onClick={exportAll}>⬇ Export</button>
           <button className="btn primary" onClick={() => setItem({ id: uid(), name: '', category: fin.settings.itemCategories[0] ?? '', unitPrice: 0, unit: 'pcs', supplier: '', status: fin.isAdmin ? 'approved' : 'pending', addedBy: engine.me, addedDate: iso() })}>{fin.isAdmin ? '+ Add item' : '+ Request item'}</button>
         </div>
         {fin.isAdmin && pending.length > 0 && (

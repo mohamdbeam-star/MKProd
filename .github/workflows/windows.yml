@@ -1,0 +1,51 @@
+# Builds the Windows app (per-user installer + portable .exe) on GitHub's Windows machines and
+# publishes both as a GitHub Release. Runs whenever desktop/ changes on main, or by hand.
+name: Windows app
+
+on:
+  push:
+    branches: [main]
+    paths: ['desktop/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+      - name: Build installer and portable exe
+        working-directory: desktop
+        run: npm run build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-v${{ steps.v.outputs.version }}
+          name: MK Prod for Windows ${{ steps.v.outputs.version }}
+          body: |
+            **Setup (recommended):** `MK-Prod-${{ steps.v.outputs.version }}-win-x64.exe` installs for the current user only (no admin rights), adds Start-menu and desktop shortcuts, and opens the app.
+
+            **Portable:** `MK-Prod-${{ steps.v.outputs.version }}-portable.exe` runs from anywhere (USB stick, Downloads) with no installation.
+
+            Windows SmartScreen may show "Windows protected your PC" the first time because the file isn't code-signed: click **More info → Run anyway**.
+          files: |
+            desktop/dist/MK-Prod-*-win-x64.exe
+            desktop/dist/MK-Prod-*-portable.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: desktop/dist/*.exe
