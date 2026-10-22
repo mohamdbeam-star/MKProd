@@ -5,7 +5,7 @@ name: Windows app
 on:
   push:
     branches: [main]
-    paths: ['desktop/**', '.github/workflows/windows.yml']
+    paths: ['desktop/**', 'VERSION', '.github/workflows/windows.yml']
   workflow_dispatch:
 
 permissions:
@@ -19,18 +19,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Read version
+        id: v
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
       - name: Install
         working-directory: desktop
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          # One version number for every platform: the VERSION file at the repository root.
+          npm version "${{ steps.v.outputs.version }}" --no-git-tag-version --allow-same-version
+          npm install --no-audit --no-fund
       - name: Build installer and portable exe
         working-directory: desktop
         run: npm run build:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Read version
-        id: v
-        shell: bash
-        run: echo "version=$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

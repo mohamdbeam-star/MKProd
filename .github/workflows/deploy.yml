@@ -1,0 +1,65 @@
+# Deploys the website + sync server to Cloudflare whenever web/ or VERSION changes on main, so an
+# update reaches the site, the Windows app and the Android app (both show the site) without
+# anyone running `npm run deploy` by hand.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions), see CLOUD_SETUP.md:
+#   CLOUDFLARE_API_TOKEN   an API token made from the "Edit Cloudflare Workers" template, plus D1 edit
+#   CLOUDFLARE_ACCOUNT_ID  Workers & Pages → Overview → Account ID
+# Until they exist the job explains what is missing and stops without failing the build.
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'VERSION', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check Cloudflare secrets
+        id: creds
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$ACCOUNT" ]; then
+            echo "::notice title=Site not deployed::Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets (see CLOUD_SETUP.md) and this workflow deploys the site automatically. Until then run 'cd web && npm run deploy' on a machine that is logged in to Cloudflare."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Build, migrate and deploy
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CI: '1'
+        run: npm run deploy
+      - name: Confirm the live version
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          sleep 10
+          curl -fsS "https://mkprod.mohamd-beam.workers.dev/version.json?t=$(date +%s)" || true
+          echo

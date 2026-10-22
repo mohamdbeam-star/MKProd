@@ -331,3 +331,6 @@ body {
 .data-menu { position: relative; display: inline-flex; }
 .data-menu .menu { right: 0; top: calc(100% + 4px); min-width: 280px; }
 .data-menu .menu .item { align-items: flex-start; }
+
+/* "A newer version is ready" bar (website, Windows and Android apps). */
+.update-bar { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 70; display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 14px; border-radius: 12px; background: var(--panel-solid); border: 1px solid var(--line); box-shadow: var(--shadow); font-size: 13px; }

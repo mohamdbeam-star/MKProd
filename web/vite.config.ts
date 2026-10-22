@@ -1,34 +1,43 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const REPO = 'mohamdbeam-star/MKProd';
 
+/** One version number for every platform: the VERSION file at the repository root. */
+const VERSION = readFileSync(resolve(__dirname, '../VERSION'), 'utf8').trim();
+/** Identifies this exact build (git commit), so running apps can tell a newer deploy apart. */
+const BUILD = (() => {
+  try { return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || String(Date.now()); } catch { return String(Date.now()); }
+})();
+
 /**
- * Writes dist/apps.json: the download links of the native apps. Their names are fixed by the
- * release workflows, and the versions come from VERSION (Mac, Android) and desktop/package.json
- * (Windows), so the links are known at build time and the server never has to ask GitHub.
+ * Writes dist/apps.json (download links of the native apps; their names are fixed by the
+ * release workflows and the version is VERSION, so the links are known at build time and the
+ * server never has to ask GitHub) and dist/version.json (what running apps poll for updates).
  */
 function appsManifest(): Plugin {
   return {
     name: 'mkprod-apps-manifest',
     generateBundle() {
-      const version = readFileSync(resolve(__dirname, '../VERSION'), 'utf8').trim();
-      const winVersion = JSON.parse(readFileSync(resolve(__dirname, '../desktop/package.json'), 'utf8')).version as string;
+      const version = VERSION;
       const dl = (tag: string, name: string) => ({ name, url: `https://github.com/${REPO}/releases/download/${tag}/${name}` });
       const apps = [
         { platform: 'mac', version, page: `https://github.com/${REPO}/releases/tag/mac-v${version}`, assets: [dl(`mac-v${version}`, `MK-Prod-${version}-mac.dmg`), dl(`mac-v${version}`, `MK-Prod-${version}-mac.zip`)] },
-        { platform: 'windows', version: winVersion, page: `https://github.com/${REPO}/releases/tag/windows-v${winVersion}`, assets: [dl(`windows-v${winVersion}`, `MK-Prod-${winVersion}-win-x64.exe`), dl(`windows-v${winVersion}`, `MK-Prod-${winVersion}-portable.exe`)] },
+        { platform: 'windows', version, page: `https://github.com/${REPO}/releases/tag/windows-v${version}`, assets: [dl(`windows-v${version}`, `MK-Prod-${version}-win-x64.exe`), dl(`windows-v${version}`, `MK-Prod-${version}-portable.exe`)] },
         { platform: 'android', version, page: `https://github.com/${REPO}/releases/tag/android-v${version}`, assets: [dl(`android-v${version}`, `MK-Prod-${version}-android.apk`)] },
       ];
-      this.emitFile({ type: 'asset', fileName: 'apps.json', source: JSON.stringify({ apps, releases: `https://github.com/${REPO}/releases` }, null, 2) });
+      this.emitFile({ type: 'asset', fileName: 'apps.json', source: JSON.stringify({ apps, releases: `https://github.com/${REPO}/releases`, version, build: BUILD }, null, 2) });
+      this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version, build: BUILD, builtAt: new Date().toISOString() }) });
     },
   };
 }
 
 export default defineConfig({
   plugins: [react(), appsManifest()],
+  define: { __APP_VERSION__: JSON.stringify(VERSION), __APP_BUILD__: JSON.stringify(BUILD) },
   build: { outDir: 'dist', chunkSizeWarningLimit: 2000 },
   server: { proxy: { '/api': 'http://127.0.0.1:8787' } },
 });

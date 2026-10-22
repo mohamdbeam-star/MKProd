@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../sync';
 import { isInstalledApp, useInstallPrompt } from '../pwa';
+import { APP_BUILD, APP_VERSION } from '../version';
 
 interface AppInfo { platform: string; version: string | null; publishedAt?: string; page?: string; assets?: { name: string; url: string; size?: number }[] }
 
@@ -19,7 +20,8 @@ export function AppsPage() {
   useEffect(() => { api<{ apps: AppInfo[]; releases: string; error?: string }>('/api/apps').then(setData).catch((e) => setError((e as Error).message)); }, []);
   return (
     <div className="col" style={{ gap: 14, maxWidth: 900 }}>
-      <div><h1>Get the apps</h1><div className="muted">Same workspace, same account, every feature. Sign in with your usual email and password; two-factor and your recovery code work everywhere.</div></div>
+      <div><h1>Get the apps</h1><div className="muted">Same workspace, same account, every feature. Sign in with your usual email and password; two-factor and your recovery code work everywhere.</div>
+        <div className="small muted" style={{ marginTop: 6 }}>You are on version {APP_VERSION} (build {APP_BUILD}). The website, Windows and Android apps update themselves: when a newer version is live, a bar at the top offers "Update now". The Mac app is updated by installing the newest release below.</div></div>
       {error && <div className="red small">{error}</div>}
       <div className="grid g3">
         {(data?.apps ?? (['mac', 'windows', 'android'].map((platform) => ({ platform, version: null })) as AppInfo[])).map((a) => {

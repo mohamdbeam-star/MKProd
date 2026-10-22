@@ -3,6 +3,7 @@ import { ID, defaultFinanceSettings, newList, newSpace, uid, PALETTE } from './m
 import { ApiError, Session, SessionUser, SyncEngine, WorkspaceInfo, api, idbClear, idbGet, idbSet } from './sync';
 import { Bytes, newKeyPair, newRecoveryCode, passwordKeys, recoveryKeys, sealScalar, unlockKeyPair, open as openSealed } from './crypto';
 import { Finance } from './finance';
+import { APP_BUILD, APP_VERSION, reloadToLatest, useUpdateAvailable } from './version';
 import { AppCtx, Avatars, Modal, useApp } from './ui';
 import { HomePage, InboxPage, TaskDrawer, TasksPage, deleteFolder, deleteList, deleteSpace } from './pages/Tasks';
 import { ChatPage, DocsPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
@@ -309,6 +310,18 @@ function parseHash() {
   return { route: path || 'home', task };
 }
 
+/** Shown when a newer build is live; one click reloads onto it (same on the website, Windows and Android). */
+function UpdateBar() {
+  const newer = useUpdateAvailable();
+  if (!newer) return null;
+  return (
+    <div className="update-bar" role="status">
+      <span>MK Prod {newer} is ready.</span>
+      <button className="btn sm primary" onClick={() => reloadToLatest()}>Update now</button>
+    </div>
+  );
+}
+
 function Workspace({ session, workspace, onSwitch, onSwitchTo, onSignOut }: { session: Session; workspace: WorkspaceInfo; onSwitch: () => void; onSwitchTo: (w: WorkspaceInfo) => void; onSignOut: () => void }) {
   const engine = useMemo(() => new SyncEngine(session, workspace, onSignOut), [session, workspace]);
   const fin = useMemo(() => new Finance(engine), [engine]);
@@ -339,6 +352,7 @@ function Workspace({ session, workspace, onSwitch, onSwitchTo, onSignOut }: { se
       </Shell>
       {task && <TaskDrawer id={task} onClose={() => openTask()} />}
       {toastMsg && <div className="toast">{toastMsg}</div>}
+      <UpdateBar />
     </AppCtx.Provider>
   );
 }
@@ -523,6 +537,7 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
             <div className="small muted row">
               <span title={st.error ?? ''}>{st.state === 'synced' ? (engine.encrypted ? '🔒 Synced · encrypted' : '✅ Synced') : st.state === 'syncing' ? '🔄 Syncing' : st.state === 'offline' ? '📴 Offline' : st.state === 'locked' ? '🔐 Waiting for key' : st.state === 'error' ? '⚠️ Sync error' : '…'}</span>
               {others.length > 0 && <Avatars ids={others} size={16} />}
+              <span className="faint" title={`Build ${APP_BUILD}`}>v{APP_VERSION}</span>
             </div>
           </div>
           <button className="btn ghost sm" title="Team & account" onClick={() => go('team')}>👥</button>

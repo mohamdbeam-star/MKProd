@@ -21,7 +21,24 @@ Changes made on the website show up in the Mac app and vice versa, usually withi
 
 A team of **up to about 10 people** working all day stays inside the free plan. If you outgrow it, the Workers Paid plan is $5/month. Nothing needs to change in the code.
 
-## Deploy (about 2 minutes)
+## Automatic deploys from GitHub (recommended, one-time setup)
+
+With two secrets in the repository, every push that touches `web/` or `VERSION` deploys the site by itself (`.github/workflows/deploy.yml`), so the website, the Windows app and the Android app (both show the site) are always on the latest version without anyone running a command.
+
+1. Cloudflare dashboard → profile icon (top right) → **My Profile → API Tokens → Create Token → "Edit Cloudflare Workers" template → Use template**. Under *Permissions* add a row **Account · D1 · Edit** (the deploy applies database migrations). Create the token and copy it; it is shown once.
+2. **Workers & Pages → Overview**: copy the **Account ID** from the right-hand column.
+3. GitHub → the repository → **Settings → Secrets and variables → Actions → New repository secret**, twice:
+
+| Name | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | the token from step 1 |
+| `CLOUDFLARE_ACCOUNT_ID` | the id from step 2 |
+
+4. **Actions → Deploy site → Run workflow** once to confirm. From then on it runs on every push. The run's last step prints the live `version.json`.
+
+Until the secrets exist the workflow stops with a notice and nothing is deployed; use the manual deploy below.
+
+## Deploy by hand (about 2 minutes)
 
 You need Node.js and a Cloudflare account (`npx wrangler login` once). The source of truth is GitHub (`mohamdbeam-star/MKProd`); nothing needs to be kept on a particular computer.
 

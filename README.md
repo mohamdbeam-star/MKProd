@@ -15,7 +15,7 @@ It's an original implementation: project management (spaces, lists, tasks, docs,
 - **Android:** [Releases → MK Prod for Android](https://github.com/mohamdbeam-star/MKProd/releases): `.apk` for Android 7+, phones, tablets and foldables. See [ANDROID.md](ANDROID.md).
 - **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar. Signed-in people find all downloads under **Get the apps** in the sidebar (Mac: Settings → Cloud & Team).
 
-All three installers are built by GitHub Actions (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) from the sources here; bump `VERSION` (Mac, Android) or `desktop/package.json` (Windows) and push to publish a new release.
+**One version number for everything.** The `VERSION` file at the repository root is the version of the website, the Mac, Windows and Android apps. To publish an update run `scripts/release.sh 1.2.0` (or `patch` / `minor` / `major`): it bumps the number, commits and pushes, and GitHub Actions then rebuilds the three installers under the new number (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) and deploys the website (`deploy.yml`, once the Cloudflare secrets from [CLOUD_SETUP.md](CLOUD_SETUP.md) are set). The website shows its version at the bottom of the sidebar; the Windows and Android apps display the website, so they pick the update up by themselves and show an "Update now" bar when a newer build is live.
 
 ## Build & run from source
 
