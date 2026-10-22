@@ -19,7 +19,8 @@ esac
 [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a version: $new"; exit 1; }
 if [ -n "$(git status --porcelain)" ]; then echo "Commit or stash your changes first."; exit 1; fi
 echo "$new" > VERSION
-node -e "const fs=require('fs');const p='desktop/package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='$new';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+# Only the version line changes, so the file keeps its formatting.
+sed -i.bak -E "s/(\"version\": *\")[0-9]+\.[0-9]+\.[0-9]+(\")/\1$new\2/" desktop/package.json && rm -f desktop/package.json.bak
 git add VERSION desktop/package.json
 git commit -q -m "Release $new"
 git push
