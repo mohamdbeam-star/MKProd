@@ -536,7 +536,7 @@ async function newSession(c: Ctx, userId: string, kind = 'normal', ttlMs = SESSI
 
 async function listSessions(env: Env, user: User, tokenHash: string): Promise<Response> {
   const rows = (await env.DB.prepare(
-    "SELECT COALESCE(id, substr(token_hash, 1, 16)) AS id, client, ip, location, created_at, last_used, token_hash = ? AS current FROM sessions WHERE user_id = ? AND kind = 'normal' AND expires_at > ? ORDER BY last_used DESC",
+    "SELECT COALESCE(id, substr(token_hash, 1, 16)) AS id, client, ip, location, COALESCE(created_at, last_used) AS created_at, last_used, token_hash = ? AS current FROM sessions WHERE user_id = ? AND kind = 'normal' AND expires_at > ? ORDER BY last_used DESC",
   ).bind(tokenHash, user.id, new Date().toISOString()).all()).results;
   return json({ sessions: rows.map((r) => ({ ...r, current: !!r.current })) });
 }

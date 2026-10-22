@@ -15,6 +15,8 @@ if [ ! -f web/migrations/0001_init.sql ]; then cp Tests/api/schema_reconstructed
 node Tests/smtp_sink.mjs $((PORT + 1)) "$WORK/mail" >"$WORK/sink.log" 2>&1 &
 (cd web && exec env CI=1 npx wrangler dev --port "$PORT" --ip 127.0.0.1 --persist-to "$WORK/d1" \
   --var SMTP_HOST:127.0.0.1 --var SMTP_PORT:$((PORT + 1)) --var SMTP_USER: --var SMTP_FROM:noreply@mkprod.test >"$WORK/wrangler.log" 2>&1) &
+# A leftover server on the port would answer with the wrong database and fail everything.
+if curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then echo "Port $PORT is already in use (stale wrangler dev?). Stop it or set PORT=…"; exit 1; fi
 for _ in $(seq 1 90); do curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 1; done
 curl -sf "http://127.0.0.1:$PORT/api/health" >/dev/null || { echo "Worker did not start:"; tail -20 "$WORK/wrangler.log"; exit 1; }
 
