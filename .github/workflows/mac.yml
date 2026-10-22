@@ -1,0 +1,60 @@
+# Builds the Mac app (universal: Apple Silicon + Intel) on GitHub's macOS machines, packages it
+# as a .dmg and a .zip, and publishes a GitHub Release. Runs whenever the app's sources change on
+# main, or by hand. The macOS 26 image gives the macOS 26 SDK the Liquid Glass design needs.
+name: Mac app
+
+on:
+  push:
+    branches: [main]
+    paths: ['Sources/**', 'Package.swift', 'build_app.sh', 'scripts/**', 'VERSION', '.github/workflows/mac.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the build number is the commit count
+      - name: Select newest Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          swift --version
+      - name: Build app
+        run: UNIVERSAL=1 BUILD_NUMBER=${{ github.run_number }} ./build_app.sh
+      - name: Read version
+        id: v
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Package .dmg and .zip
+        run: |
+          V=${{ steps.v.outputs.version }}
+          mkdir -p dist/dmg
+          cp -R "MK Prod.app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "MK Prod" -srcfolder dist/dmg -ov -format UDZO "dist/MK-Prod-$V-mac.dmg"
+          ditto -c -k --keepParent "MK Prod.app" "dist/MK-Prod-$V-mac.zip"
+          ls -la dist
+          lipo -info "MK Prod.app/Contents/MacOS/MKProd"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mac-v${{ steps.v.outputs.version }}
+          name: MK Prod for Mac ${{ steps.v.outputs.version }}
+          body: |
+            **Install:** open `MK-Prod-${{ steps.v.outputs.version }}-mac.dmg` and drag **MK Prod** to **Applications**. Universal build (Apple Silicon and Intel), macOS 14 or newer; Liquid Glass design on macOS 26.
+
+            **First launch:** the app is not notarized with Apple, so macOS says it "cannot verify the developer". Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to MK Prod (or right-click the app → Open). Once.
+
+            The `.zip` is the same app for people who prefer it.
+          files: |
+            dist/MK-Prod-*-mac.dmg
+            dist/MK-Prod-*-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-build
+          path: dist/*.dmg

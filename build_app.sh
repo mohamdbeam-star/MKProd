@@ -11,8 +11,15 @@ if ! xcodebuild -version >/dev/null 2>&1; then
   done
 fi
 
-swift build -c release
-BIN=$(swift build -c release --show-bin-path)/MKProd
+# Version from the VERSION file; build number from the commit count (or CI run number).
+VERSION=$(tr -d '[:space:]' < VERSION 2>/dev/null || echo 1.0.0)
+BUILD=${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}
+
+# UNIVERSAL=1 builds one binary for Apple Silicon and Intel (used by the GitHub release).
+ARCH_FLAGS=()
+[[ ${UNIVERSAL:-0} == 1 ]] && ARCH_FLAGS=(--arch arm64 --arch x86_64)
+swift build -c release "${ARCH_FLAGS[@]}"
+BIN=$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)/MKProd
 APP="MK Prod.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -38,8 +45,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>MKProd</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -55,5 +62,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
-echo "Built $(pwd)/$APP"
+# Ad-hoc signature (required to run at all on Apple Silicon). Set SIGN_IDENTITY to a
+# "Developer ID Application" certificate for a signed build that Gatekeeper accepts without
+# the right-click → Open step; notarize afterwards with `xcrun notarytool`.
+codesign --force --deep --options runtime --sign "${SIGN_IDENTITY:--}" "$APP"
+echo "Built $(pwd)/$APP (version $VERSION, build $BUILD)"

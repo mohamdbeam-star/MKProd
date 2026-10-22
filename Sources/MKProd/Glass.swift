@@ -15,17 +15,28 @@ struct MKCard: ViewModifier {
     var interactive = false
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
+        // Built with the macOS 26 SDK: real Liquid Glass when running on macOS 26.
         if #available(macOS 26.0, *) {
             content.glassEffect(glass, in: .rect(cornerRadius: radius))
         } else {
-            content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5).blendMode(.plusLighter))
-                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
-                .shadow(color: .black.opacity(0.06), radius: 10, y: 4)
+            frosted(content)
         }
+        #else
+        // Older toolchain (no glassEffect in the SDK): frosted material everywhere.
+        frosted(content)
+        #endif
     }
 
+    private func frosted(_ content: Content) -> some View {
+        content
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5).blendMode(.plusLighter))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+            .shadow(color: .black.opacity(0.06), radius: 10, y: 4)
+    }
+
+    #if compiler(>=6.2)
     @available(macOS 26.0, *)
     private var glass: Glass {
         var g: Glass = .regular
@@ -33,6 +44,7 @@ struct MKCard: ViewModifier {
         if interactive { g = g.interactive() }
         return g
     }
+    #endif
 }
 
 extension View {

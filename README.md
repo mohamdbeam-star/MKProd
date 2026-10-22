@@ -8,10 +8,18 @@ A team workspace for tasks, budgets, orders and contracts, in three forms that s
 
 It's an original implementation with a ClickUp-style feature set, no ClickUp code, assets or branding.
 
-## Build & run
+## Install
+
+- **Mac:** [Releases → MK Prod for Mac](https://github.com/mohamdbeam-star/MKProd/releases): open the `.dmg`, drag MK Prod to Applications. First launch: System Settings → Privacy & Security → **Open Anyway** (the app is not notarized with Apple). Universal (Apple Silicon + Intel), macOS 14+, Liquid Glass on macOS 26.
+- **Windows:** [Releases → MK Prod for Windows](https://github.com/mohamdbeam-star/MKProd/releases): per-user setup or portable `.exe`, no admin rights. See [WINDOWS.md](WINDOWS.md).
+- **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar.
+
+Both installers are built by GitHub Actions (`.github/workflows/mac.yml`, `windows.yml`) from the sources here; bump `VERSION` (Mac) or `desktop/package.json` (Windows) and push to publish a new release.
+
+## Build & run from source
 
 ```bash
-./build_app.sh
+./build_app.sh            # builds MK Prod.app next to the script (UNIVERSAL=1 for a two-architecture binary)
 open "MK Prod.app"
 ```
 
