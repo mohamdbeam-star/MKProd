@@ -37,12 +37,17 @@ on the cover screen, and the full sidebar layout on the inner screen or a tablet
 
 Each APK must be signed. The GitHub build signs with a **temporary** key until you give it a
 permanent one; with a temporary key, a newer version can't install over an older one (users
-would have to uninstall first). Create the permanent key once, on your Mac:
+would have to uninstall first). Create the permanent key once, on your Mac (no Java needed; macOS's built-in `openssl` does it):
 
 ```bash
-keytool -genkeypair -v -keystore mkprod-android.jks -alias mkprod -keyalg RSA -keysize 2048 -validity 10000 \
-  -dname "CN=MK Prod" -storepass 'CHOOSE-A-STRONG-PASSWORD' -keypass 'CHOOSE-A-STRONG-PASSWORD'
-base64 -i mkprod-android.jks | pbcopy     # keystore, base64, now on the clipboard
+mkdir -p ~/Documents/MKProd-keys && cd ~/Documents/MKProd-keys
+PW=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)
+openssl req -x509 -newkey rsa:2048 -nodes -days 10000 -subj "/CN=MK Prod/O=MK Prod" -keyout mkprod-key.pem -out mkprod-cert.pem 2>/dev/null
+openssl pkcs12 -export -inkey mkprod-key.pem -in mkprod-cert.pem -name mkprod -out mkprod-android.p12 -passout "pass:$PW"
+rm mkprod-key.pem mkprod-cert.pem
+echo "$PW" > mkprod-android.password.txt
+base64 -i mkprod-android.p12 | pbcopy
+echo "Password: $PW  (saved in mkprod-android.password.txt). Keystore base64 is on your clipboard."
 ```
 
 Then on GitHub: **Settings → Secrets and variables → Actions → New repository secret**, four times:

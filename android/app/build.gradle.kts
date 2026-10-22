@@ -29,6 +29,7 @@ android {
         signingConfigs {
             create("release") {
                 storeFile = File(ksPath)
+                storeType = "PKCS12"   // what keytool (JDK 9+) and `openssl pkcs12 -export` both produce
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
