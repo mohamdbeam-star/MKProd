@@ -153,6 +153,7 @@ struct CloudSettingsView: View {
 
             if cloud.isConnected {
                 TeamSection()
+                if cloud.myRole == "owner" { PanicModeSection() }
             }
 
             if let message {
@@ -247,6 +248,66 @@ struct SecuritySection: View {
         note = nil
         Task { @MainActor in
             do { try await work(); note = done } catch { note = error.localizedDescription }
+            busy = false
+        }
+    }
+}
+
+/// Owner only: lock the workspace for everyone else at once (suspected breach, lost device).
+/// Same switch as the website's Team page; the server enforces it, the apps only show it.
+struct PanicModeSection: View {
+    @Environment(Store.self) private var store
+    @State private var lockedAt: String?
+    @State private var busy = false
+    @State private var confirmLock = false
+    @State private var note: String?
+
+    private var cloud: CloudSync { store.cloud }
+    private var base: String? { cloud.workspaceId.map { "/api/workspaces/\($0.uuidString)" } }
+
+    var body: some View {
+        Section {
+            HStack {
+                if let lockedAt {
+                    Label("Locked since \(ISO8601DateFormatter.plain.date(from: lockedAt)?.formatted(date: .abbreviated, time: .shortened) ?? lockedAt)", systemImage: "lock.fill")
+                        .foregroundStyle(.red)
+                } else {
+                    Label("Workspace open", systemImage: "lock.open").foregroundStyle(.secondary)
+                }
+                Spacer()
+                if lockedAt != nil {
+                    Button("Unlock workspace") { setLocked(false) }.disabled(busy)
+                } else {
+                    Button("Lock workspace now…", role: .destructive) { confirmLock = true }.disabled(busy)
+                }
+                if busy { ProgressView().controlSize(.small) }
+            }
+            Text("For a suspected breach or a lost device: instantly blocks everyone except you, including admins, open sessions and supplier links. Your data stays encrypted and untouched; unlock when it's safe.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let note { Text(note).font(.callout).foregroundStyle(.orange) }
+        } header: { Text("Panic mode") }
+        .task { await load() }
+        .confirmationDialog("Lock \(cloud.workspaces.first { $0.id == cloud.workspaceId }?.name ?? "this workspace") now?", isPresented: $confirmLock) {
+            Button("Lock workspace", role: .destructive) { setLocked(true) }
+        } message: {
+            Text("Every other member is signed out and refused until you unlock it, and supplier links stop working.")
+        }
+    }
+
+    private func load() async {
+        guard let base else { return }
+        if let obj = try? await cloud.client.call("GET", "\(base)/team") { lockedAt = obj["lockedAt"] as? String }
+    }
+
+    private func setLocked(_ locked: Bool) {
+        guard let base else { return }
+        busy = true
+        note = nil
+        Task { @MainActor in
+            do {
+                let obj = try await cloud.client.call("POST", "\(base)/lock", ["locked": locked])
+                lockedAt = obj["lockedAt"] as? String
+            } catch { note = error.localizedDescription }
             busy = false
         }
     }

@@ -39,8 +39,22 @@ struct StatusDef: Identifiable, Codable, Hashable {
 
 enum FieldType: String, Codable, CaseIterable, Identifiable {
     case text, number, money, dropdown, checkbox, date, url, rating, email
+    case people, phone, location, progress, formula
     var id: String { rawValue }
-    var label: String { rawValue.capitalized }
+    var label: String {
+        switch self {
+        case .url: "URL"
+        case .progress: "Progress (automatic)"
+        default: rawValue.capitalized
+        }
+    }
+    /// Computed from the task, not typed in.
+    var isComputed: Bool { self == .formula || self == .progress }
+
+    /// A type added by a newer app version reads as text instead of dropping the whole space.
+    init(from decoder: Decoder) throws {
+        self = FieldType(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .text
+    }
 }
 
 struct FieldDef: Identifiable, Codable, Hashable {
@@ -184,6 +198,9 @@ struct TaskItem: Identifiable, Codable, Hashable {
     var isMilestone = false
     /// Set when deleted; the task stays archived in Trash until restored or purged.
     var trashedAt: Date?
+    /// Planned dates saved from the Gantt ("Save baseline"), drawn under the live bars to show slippage.
+    var baselineStart: Date?
+    var baselineDue: Date?
 }
 
 // MARK: - Docs, whiteboards, chat
@@ -305,6 +322,24 @@ struct InboxItem: Identifiable, Codable, Hashable {
     var target: String?
 }
 
+// MARK: - Resource management
+
+struct TimeOff: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var start: Date
+    var end: Date
+    var note: String = ""
+}
+
+/// Capacity of one person; the record id is the member id. `workDays` uses 0 = Sunday … 6 = Saturday,
+/// the same as the website.
+struct Resource: Identifiable, Codable, Hashable {
+    var id: UUID
+    var hoursPerDay: Double = 8
+    var workDays: [Int] = [1, 2, 3, 4, 5]
+    var timeOff: [TimeOff] = []
+}
+
 // MARK: - Automations
 
 enum TriggerType: String, Codable, CaseIterable, Identifiable {
@@ -414,6 +449,7 @@ struct AppData: Codable {
     var dashboards: [Dashboard] = []
     var templates: [TaskTemplate] = []
     var favorites: [UUID] = []
+    var resources: [Resource] = []
     // Budget & procurement
     var entities: [FinEntity] = []
     var budgets: [Budget] = []
@@ -441,7 +477,7 @@ struct AppData: Codable {
         tasks = v(.tasks, []); docs = v(.docs, []); whiteboards = v(.whiteboards, []); channels = v(.channels, [])
         messages = v(.messages, []); goals = v(.goals, []); timeEntries = v(.timeEntries, []); reminders = v(.reminders, [])
         inbox = v(.inbox, []); automations = v(.automations, []); dashboards = v(.dashboards, []); templates = v(.templates, [])
-        favorites = v(.favorites, [])
+        favorites = v(.favorites, []); resources = v(.resources, [])
         entities = v(.entities, []); budgets = v(.budgets, []); orders = v(.orders, []); savings = v(.savings, [])
         contracts = v(.contracts, []); catalog = v(.catalog, []); audit = v(.audit, [])
         financeSettings = v(.financeSettings, [FinanceSettings()])

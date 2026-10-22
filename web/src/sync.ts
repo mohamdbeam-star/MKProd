@@ -12,7 +12,7 @@ import { Notice, contractNotices, digestNotices, isoWeek, orderNotices, taskNoti
 
 export interface SessionUser { id: ID; email: string; name: string; color: string; publicKey?: string | null; encPrivateKey?: string | null; emailVerified?: boolean; totpEnabled?: boolean }
 export interface Session { user: SessionUser; privateKey: CryptoKey }
-export interface WorkspaceInfo { id: ID; name: string; role: string }
+export interface WorkspaceInfo { id: ID; name: string; role: string; locked?: boolean }
 export interface TeamMember { id: ID; email: string; name: string; color: string; role: string; publicKey: string | null; hasKey: number; totpEnabled?: number }
 export interface Presence { user_id: ID; viewing: string; client: string; last_seen: string }
 export type { InboxItem } from './model';

@@ -13,7 +13,7 @@ const EVENT_LABELS: Record<string, string> = {
   totp_disabled: 'Two-factor off', session_revoked: 'Device signed out', sessions_revoked_all: 'Other devices signed out', invite_created: 'Invite sent',
   invite_cancelled: 'Invite cancelled', invite_accepted: 'Joined', role_changed: 'Role changed', member_removed: 'Member removed', member_left: 'Member left',
   key_rotated: 'Encryption key', workspace_created: 'Workspace created', workspace_renamed: 'Workspace renamed', workspace_deleted: 'Workspace deleted',
-  owner_transferred: 'Ownership transferred', require_mfa_changed: 'Two-factor policy', share_created: 'Supplier link created', share_revoked: 'Supplier link revoked',
+  owner_transferred: 'Ownership transferred', require_mfa_changed: 'Two-factor policy', workspace_locked: 'Panic mode on', workspace_unlocked: 'Panic mode off', share_created: 'Supplier link created', share_revoked: 'Supplier link revoked',
 };
 
 interface SecurityEvent { id: string; at: string; type: string; detail: string; ip?: string; location?: string; actor_id?: string; actor_name?: string }
@@ -178,7 +178,7 @@ export function DeleteAccountCard({ onDeleted }: { onDeleted: () => void }) {
 }
 
 /** Owner-only governance: two-factor requirement, ownership transfer, deletion. */
-export function WorkspaceGovernanceCard({ requireMfa, onChanged, onDeleted }: { requireMfa: boolean; onChanged: () => void; onDeleted: () => void }) {
+export function WorkspaceGovernanceCard({ requireMfa, lockedAt, onChanged, onDeleted }: { requireMfa: boolean; lockedAt?: string | null; onChanged: () => void; onDeleted: () => void }) {
   const { engine, toast } = useApp();
   const [target, setTarget] = useState<ID>('');
   const [busy, setBusy] = useState(false);
@@ -199,6 +199,18 @@ export function WorkspaceGovernanceCard({ requireMfa, onChanged, onDeleted }: { 
         }} />
         <span><div>Require two-factor sign-in for every member</div><div className="small muted">Members without it are locked out of this workspace (not their account) until they turn it on.</div></span>
       </label>
+      <div className="col" style={{ gap: 6, padding: 10, borderRadius: 10, background: lockedAt ? 'color-mix(in srgb, var(--red) 12%, transparent)' : 'var(--hover)' }}>
+        <div className="row">
+          <strong className="grow">🚨 Panic mode {lockedAt && <span className="pill" style={{ background: '#E5484D26', color: '#E5484D' }}>LOCKED since {new Date(lockedAt).toLocaleString()}</span>}</strong>
+          {lockedAt
+            ? <button className="btn" disabled={busy} onClick={() => confirm('Unlock the workspace? Members can sign in and open it again.') && run(() => api(`${base}/lock`, { body: { locked: false } }), 'Workspace unlocked')}>Unlock workspace</button>
+            : <button className="btn danger" disabled={busy} onClick={() => {
+                if (prompt(`Lock "${engine.workspace.name}" now? Every other member is signed out and refused until you unlock it, and supplier links stop working. Type LOCK to confirm.`)?.trim().toUpperCase() !== 'LOCK') return;
+                run(() => api(`${base}/lock`, { body: { locked: true } }), 'Workspace locked');
+              }}>Lock workspace now</button>}
+        </div>
+        <div className="small muted">For a suspected breach or a lost device: instantly blocks everyone except you, including admins, open sessions and supplier links. Your data stays encrypted and untouched; unlock when it's safe.</div>
+      </div>
       <div className="row wrap">
         <select className="input" value={target} onChange={(e) => setTarget(e.target.value)}><option value="">Transfer ownership to…</option>{others.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.role})</option>)}</select>
         <button className="btn" disabled={!target || busy} onClick={() => {

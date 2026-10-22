@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 enum ViewMode: String, CaseIterable, Identifiable {
-    case list = "List", board = "Board", calendar = "Calendar", gantt = "Gantt", table = "Table", workload = "Workload", mindmap = "Mind Map", form = "Form"
+    case list = "List", board = "Board", calendar = "Calendar", gantt = "Gantt", table = "Table", chart = "Chart", workload = "Workload", mindmap = "Mind Map", form = "Form"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -11,6 +11,7 @@ enum ViewMode: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .gantt: "chart.bar.doc.horizontal"
         case .table: "tablecells"
+        case .chart: "chart.pie"
         case .workload: "person.3.sequence"
         case .mindmap: "point.3.connected.trianglepath.dotted"
         case .form: "list.clipboard"
@@ -174,6 +175,7 @@ struct TaskContainerView: View {
         case .calendar: CalendarView(tasks: tasks, defaultList: defaultListId)
         case .gantt: GanttView(tasks: tasks)
         case .table: TaskTableView(tasks: tasks, fields: fields)
+        case .chart: TaskChartView(tasks: tasks)
         case .workload: WorkloadView(tasks: tasks)
         case .mindmap: MindMapView(location: location, tasks: tasks)
         case .form: TaskFormView(defaultList: defaultListId)

@@ -6,8 +6,13 @@ Everything below is available in the Mac app and on the website (and therefore i
 
 - **Hierarchy:** Workspace → Spaces → Folders → Lists; favorites, archive, templates.
 - **Tasks:** custom statuses per Space, priorities, multiple assignees, watchers, tags, start/due dates, estimates, points, milestones, recurrence, subtasks, checklists, dependencies, linked tasks, attachments (encrypted files or links), comments with @mentions, activity log.
-- **Custom fields:** text, number, money, dropdown, checkbox, date, URL, email, rating.
-- **Views:** List, Board, Calendar, Gantt, Table, Workload, Mind Map, Form (Mac); List, Board, Calendar, Table, Gantt (web).
+- **Custom fields:** text, number, money, dropdown, checkbox, date, URL, email, rating, people, phone, location, automatic progress (subtasks + checklists) and **formulas** (`{Unit cost} * {Quantity}`, `IF({Days left} < 0, "Late", "OK")`, ROUND/MIN/MAX/SUM/AVG/ABS/TODAY). Edited per Space; shown as Table columns with sums and in the task panel.
+- **Views:** List, Board, Calendar, Gantt, Table, Chart, Workload, Mind Map, Form.
+- **Chart view:** bar, donut or line chart of the tasks in view, grouped by status, priority, assignee, tag, list, due month or a custom field, measuring task count, estimated hours, points, tracked hours or the sum of a number/money/formula field.
+- **Gantt:** dependency arrows, **critical path** (the longest chain of dependent tasks, highlighted), and **baselines**: save the planned dates, then see slips as the gap between each bar and its grey baseline line.
+- **Portfolio:** every list as a project with progress against its schedule, health (on track / at risk / off track / done), owners, open and overdue counts and a timeline, filterable by space and health.
+- **Resource management:** per-person capacity (hours per day, working days, time off) against estimated work week by week, colour-coded by utilisation.
+- **Content directory:** every space, folder, list, sprint, doc, channel, goal, whiteboard and dashboard in one searchable table with location, size, privacy and last update.
 - **Home:** My work, approvals waiting, reminders, recently updated.
 - **Inbox:** assignments, mentions, approvals, reminders; synced across your devices and private to you.
 - **Docs** (Markdown, nested pages), **Chat** channels, **Goals** with targets, **Time tracking** and timesheets, **Dashboards** and **Automations** (Mac), **Whiteboards** (Mac).
@@ -29,6 +34,7 @@ Everything below is available in the Mac app and on the website (and therefore i
 - End-to-end encryption; the server stores ciphertext only.
 - Accounts with email confirmation, two-factor sign-in (optional, enforceable per workspace), recovery codes, devices list, security log, sign-in alerts.
 - Roles: owner, admin, member, viewer. Invite codes. Ownership transfer; account and workspace deletion.
+- **Panic mode** (owner): lock the workspace instantly for everyone else, admins included; their sessions end, sync and supplier links are refused until the owner unlocks it. Recorded in the security log.
 - Email notifications per person: assignments, updates, mentions, approvals, contract reminders, weekly summary.
 - Presence (who is online, who has a task open), field-by-field merge of simultaneous edits, offline use.
 

@@ -201,10 +201,11 @@ export function TeamPage() {
   const [prints, setPrints] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [requireMfa, setRequireMfa] = useState(false);
+  const [lockedAt, setLockedAt] = useState<string | null>(null);
   const [account, setAccount] = useState<{ totpEnabled: boolean; backupCodesLeft: number; emailVerified: boolean } | null>(null);
   const base = `/api/workspaces/${engine.workspace.id}`;
   const load = () => {
-    api<{ invites: { email: string; role: string; expires_at?: string }[]; requireMfa: boolean }>(`${base}/team`).then((r) => { setInvites(r.invites); setRequireMfa(!!r.requireMfa); }).catch(() => {});
+    api<{ invites: { email: string; role: string; expires_at?: string }[]; requireMfa: boolean; lockedAt?: string | null }>(`${base}/team`).then((r) => { setInvites(r.invites); setRequireMfa(!!r.requireMfa); setLockedAt(r.lockedAt ?? null); }).catch(() => {});
     api<{ user: { totpEnabled: boolean; backupCodesLeft: number; emailVerified: boolean } }>('/api/me').then((r) => setAccount(r.user)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
@@ -279,7 +280,7 @@ export function TeamPage() {
         )}
         <p className="small muted">Invites need the one-time code; knowing the email isn't enough. Each person's key fingerprint should match what they see on their own device.</p>
       </div>
-      {engine.role === 'owner' && <WorkspaceGovernanceCard requireMfa={requireMfa} onChanged={() => { load(); engine.sync(); }} onDeleted={leaveToPicker} />}
+      {engine.role === 'owner' && <WorkspaceGovernanceCard requireMfa={requireMfa} lockedAt={lockedAt} onChanged={() => { load(); engine.sync(); }} onDeleted={leaveToPicker} />}
       {engine.isAdmin && <SecurityLogCard scope="workspace" />}
       {account && <TwoFactorCard enabled={account.totpEnabled} backupCodesLeft={account.backupCodesLeft} onChange={() => { load(); engine.sync(); }} />}
       <DevicesCard />

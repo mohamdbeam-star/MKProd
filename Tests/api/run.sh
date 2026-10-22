@@ -25,5 +25,6 @@ status=0
 echo "== core sync API"; node Tests/api/core.mjs "$WORK/mail" || status=1
 echo "== trust & compliance"; node Tests/api/trust_and_compliance.mjs "$WORK/mail" || status=1
 echo "== adversarial"; node Tests/api/adversarial.mjs "$WORK/mail" || status=1
+echo "== panic mode"; node Tests/api/panic_mode.mjs "$WORK/mail" || status=1
 if grep -q "ERROR" "$WORK/wrangler.log"; then echo "== Worker logged errors:"; grep -A3 "ERROR" "$WORK/wrangler.log" | head -30; status=1; fi
 exit $status

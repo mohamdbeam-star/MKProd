@@ -120,10 +120,14 @@ async function route(c: Ctx, url: URL): Promise<Response> {
   if (!ws) throw new HttpError(404, 'Not found');
   const wsId = ws[1].toUpperCase();
   const sub = ws[2] ?? '';
-  const wsRow = await env.DB.prepare('SELECT m.role, w.require_mfa, w.key_version, w.name FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.workspace_id = ? AND m.user_id = ?')
-    .bind(wsId, user.id).first<{ role: Role; require_mfa: number; key_version: number; name: string }>();
+  const wsRow = await env.DB.prepare('SELECT m.role, w.require_mfa, w.key_version, w.name, w.locked_at FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.workspace_id = ? AND m.user_id = ?')
+    .bind(wsId, user.id).first<{ role: Role; require_mfa: number; key_version: number; name: string; locked_at: string | null }>();
   if (!wsRow) throw new HttpError(403, 'You are not a member of this workspace');
   const role = wsRow.role;
+  // Panic mode: nobody but the owner gets in, whatever they ask for.
+  if (wsRow.locked_at && role !== 'owner') {
+    throw new HttpError(423, 'This workspace has been locked by its owner. Nobody can open it until the owner unlocks it.', { locked: true, lockedAt: wsRow.locked_at });
+  }
   if (wsRow.require_mfa && !user.totpEnabled) {
     throw new HttpError(403, 'This workspace requires two-factor sign-in. Turn it on under Team & account › Your security, then try again.', { mfaRequired: true });
   }
@@ -134,6 +138,7 @@ async function route(c: Ctx, url: URL): Promise<Response> {
   if (sub === '/notify' && m === 'POST') return notify(req, env, wsId, user, role);
   if (sub === '/security' && m === 'GET') { requireAdmin(role); return securityLog(env, { wsId }); }
   if (sub === '/transfer' && m === 'POST') return transferOwnership(c, wsId, user, role);
+  if (sub === '/lock' && m === 'POST') return setLock(c, wsId, user, role);
   if (sub === '' && m === 'DELETE') return deleteWorkspace(c, wsId, user, role);
   if (sub === '' && m === 'PATCH') {
     requireAdmin(role);
@@ -574,13 +579,13 @@ async function acceptInvite(c: Ctx, user: User): Promise<Response> {
 
 async function me(env: Env, user: User): Promise<Response> {
   const [ws, u] = await env.DB.batch([
-    env.DB.prepare('SELECT w.id, w.name, m.role, w.require_mfa AS requireMfa FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY w.created_at').bind(user.id),
+    env.DB.prepare('SELECT w.id, w.name, m.role, w.require_mfa AS requireMfa, w.locked_at AS lockedAt FROM members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ? ORDER BY w.created_at').bind(user.id),
     env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id),
   ]);
   const row = u.results[0] as unknown as UserRow;
   return json({
     user: { ...publicUser(row), hasRecovery: !!row.rec_hash, notifyPrefs: prefsOf(row.notify_prefs), backupCodesLeft: row.totp_recovery ? (JSON.parse(row.totp_recovery) as string[]).length : 0 },
-    workspaces: (ws.results as { requireMfa: number }[]).map((w) => ({ ...w, requireMfa: !!w.requireMfa })), emailEnabled: emailConfigured(env), filesEnabled: !!env.FILES,
+    workspaces: (ws.results as { requireMfa: number; lockedAt: string | null }[]).map((w) => ({ ...w, requireMfa: !!w.requireMfa, locked: !!w.lockedAt })), emailEnabled: emailConfigured(env), filesEnabled: !!env.FILES,
   });
 }
 
@@ -681,15 +686,39 @@ async function transferOwnership(c: Ctx, wsId: string, user: User, role: Role): 
   return json({ ok: true });
 }
 
+/**
+ * Panic mode, owner only. Locking takes effect on the next request of every other member (they get
+ * 423 and their apps stop syncing), disables supplier links, and signs everyone else out so open
+ * sessions can't linger. Unlocking restores access; people sign in again as usual.
+ */
+async function setLock(c: Ctx, wsId: string, user: User, role: Role): Promise<Response> {
+  if (role !== 'owner') throw new HttpError(403, 'Only the owner can lock or unlock the workspace');
+  const { locked } = await body<{ locked: boolean }>(c.req);
+  if (typeof locked !== 'boolean') throw new HttpError(400, 'locked must be true or false');
+  const now = new Date().toISOString();
+  if (locked) {
+    await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE workspaces SET locked_at = ?, locked_by = ? WHERE id = ?').bind(now, user.id, wsId),
+      // Other members' sessions end too, unless they still need them for another workspace.
+      c.env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (SELECT user_id FROM members WHERE workspace_id = ? AND user_id != ?)
+        AND user_id NOT IN (SELECT user_id FROM members WHERE workspace_id != ?)`).bind(wsId, user.id, wsId),
+    ]);
+  } else {
+    await c.env.DB.prepare('UPDATE workspaces SET locked_at = NULL, locked_by = NULL WHERE id = ?').bind(wsId).run();
+  }
+  await logEvent(c, { wsId, actorId: user.id, type: locked ? 'workspace_locked' : 'workspace_unlocked', detail: locked ? 'Panic mode on: workspace locked for everyone but the owner' : 'Panic mode off: workspace unlocked' });
+  return json({ ok: true, lockedAt: locked ? now : null });
+}
+
 async function team(env: Env, wsId: string, role: Role): Promise<Response> {
   const [w, mem, inv] = await env.DB.batch([
-    env.DB.prepare('SELECT name, key_version, require_mfa FROM workspaces WHERE id = ?').bind(wsId),
+    env.DB.prepare('SELECT name, key_version, require_mfa, locked_at FROM workspaces WHERE id = ?').bind(wsId),
     membersQuery(env, wsId),
     env.DB.prepare('SELECT email, role, expires_at FROM invites WHERE workspace_id = ? ORDER BY created_at').bind(wsId),
   ]);
-  const wr = w.results[0] as { name: string; key_version: number; require_mfa: number } | undefined;
+  const wr = w.results[0] as { name: string; key_version: number; require_mfa: number; locked_at: string | null } | undefined;
   return json({
-    name: wr?.name ?? '', keyVersion: wr?.key_version ?? 0, requireMfa: !!wr?.require_mfa, role,
+    name: wr?.name ?? '', keyVersion: wr?.key_version ?? 0, requireMfa: !!wr?.require_mfa, lockedAt: wr?.locked_at ?? null, role,
     members: mem.results,
     invites: role === 'owner' || role === 'admin' ? inv.results : [],
   });
@@ -886,16 +915,18 @@ async function shareDelete(c: Ctx, wsId: string, user: User, role: Role, id: str
 
 async function shareGet(c: Ctx, id: string): Promise<Response> {
   await rateLimit(c.env, `share-get:${ip(c.req)}`, 120, 3600);
-  const s = await c.env.DB.prepare('SELECT kind, label, blob, allow_reply, expires_at FROM shares WHERE id = ?').bind(id).first<{ kind: string; label: string; blob: string; allow_reply: number; expires_at: string }>();
+  const s = await c.env.DB.prepare('SELECT s.kind, s.label, s.blob, s.allow_reply, s.expires_at, w.locked_at FROM shares s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?').bind(id).first<{ kind: string; label: string; blob: string; allow_reply: number; expires_at: string; locked_at: string | null }>();
   if (!s || s.expires_at < new Date().toISOString()) throw new HttpError(404, 'This link has expired or was removed.');
+  if (s.locked_at) throw new HttpError(423, 'This link is temporarily unavailable.');
   c.exec.waitUntil(c.env.DB.prepare('UPDATE shares SET views = views + 1 WHERE id = ?').bind(id).run());
   return json({ kind: s.kind, label: s.label, blob: s.blob, allowReply: !!s.allow_reply, expiresAt: s.expires_at });
 }
 
 async function shareReply(c: Ctx, id: string): Promise<Response> {
   await rateLimit(c.env, `share-reply:${ip(c.req)}`, 20, 3600);
-  const s = await c.env.DB.prepare('SELECT allow_reply, expires_at, (SELECT COUNT(*) FROM share_replies WHERE share_id = shares.id) AS n FROM shares WHERE id = ?').bind(id).first<{ allow_reply: number; expires_at: string; n: number }>();
+  const s = await c.env.DB.prepare('SELECT allow_reply, expires_at, (SELECT COUNT(*) FROM share_replies WHERE share_id = shares.id) AS n, (SELECT locked_at FROM workspaces WHERE id = shares.workspace_id) AS locked_at FROM shares WHERE id = ?').bind(id).first<{ allow_reply: number; expires_at: string; n: number; locked_at: string | null }>();
   if (!s || s.expires_at < new Date().toISOString()) throw new HttpError(404, 'This link has expired or was removed.');
+  if (s.locked_at) throw new HttpError(423, 'This link is temporarily unavailable.');
   if (!s.allow_reply) throw new HttpError(403, 'This link does not accept replies.');
   if (s.n >= 20) throw new HttpError(429, 'This link has received the maximum number of replies.');
   const { blob } = await body<{ blob: string }>(c.req);

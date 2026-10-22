@@ -134,10 +134,13 @@ struct SidebarView: View {
 
             Section("Workspace") {
                 row("Goals", "target", .goals)
+                row("Portfolio", "square.stack.3d.up", .portfolio)
+                row("Resources", "person.badge.clock", .resources)
                 row("Dashboards", "chart.bar.xaxis", .dashboards)
                 row("Timesheets", "clock", .timesheet)
                 row("Automations", "bolt", .automations)
                 row("Templates", "square.on.square.dashed", .templates)
+                row("Content Directory", "books.vertical", .directory)
                 row("Archive", "archivebox", .archive)
                 row("Trash", "trash", .trash)
             }

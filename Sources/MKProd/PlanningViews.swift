@@ -131,12 +131,21 @@ struct GanttView: View {
     @Environment(Store.self) private var store
     @State private var dayWidth: CGFloat = 32
     @State private var dragOffsets: [UUID: CGFloat] = [:]
+    @State private var showCritical = true
+    @State private var showBaseline = true
+    @State private var confirmBaseline = false
 
     private let rowHeight: CGFloat = 34
+    private var critical: Set<UUID> { showCritical ? criticalPath(tasks) : [] }
+    private var hasBaseline: Bool { tasks.contains { $0.baselineStart != nil || $0.baselineDue != nil } }
+    private func slip(_ t: TaskItem) -> Int {
+        guard let b = t.baselineDue, let d = t.dueDate else { return 0 }
+        return Calendar.current.dateComponents([.day], from: b.startOfDay, to: d.startOfDay).day ?? 0
+    }
     private let labelWidth: CGFloat = 240
 
     private var range: (Date, Int) {
-        let dated = tasks.flatMap { [$0.startDate, $0.dueDate].compactMap { $0 } }
+        let dated = tasks.flatMap { [$0.startDate, $0.dueDate, showBaseline ? $0.baselineStart : nil, showBaseline ? $0.baselineDue : nil].compactMap { $0 } }
         let start = (dated.min() ?? Date()).startOfDay.adding(days: -3)
         let end = max((dated.max() ?? Date()).startOfDay, Date().startOfDay).adding(days: 10)
         let days = max(Calendar.current.dateComponents([.day], from: start, to: end).day ?? 30, 21)
@@ -148,6 +157,20 @@ struct GanttView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Drag bars to reschedule. Dependencies show as arrows.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Critical path", isOn: $showCritical).toggleStyle(.checkbox)
+                    .help("The longest chain of dependent tasks: a delay on any of them delays the end of the chain.")
+                Toggle("Baseline", isOn: $showBaseline).toggleStyle(.checkbox)
+                if hasBaseline {
+                    let late = tasks.filter { slip($0) > 0 }.count
+                    Text(late > 0 ? "\(late) behind baseline" : "On baseline").font(.caption).foregroundStyle(late > 0 ? .red : .green)
+                }
+                Button("Save baseline") { if hasBaseline { confirmBaseline = true } else { saveBaseline() } }
+                    .help("Keep today's planned dates so later slips show as a grey line under each bar")
+                if hasBaseline {
+                    Button("Clear baseline") {
+                        for t in tasks { store.updateTask(t.id) { $0.baselineStart = nil; $0.baselineDue = nil } }
+                    }
+                }
                 Spacer()
                 Image(systemName: "minus.magnifyingglass")
                 Slider(value: $dayWidth, in: 14...70).frame(width: 140)
@@ -163,6 +186,7 @@ struct GanttView: View {
                             HStack {
                                 StatusPill(status: store.status(of: t), compact: true)
                                 Text(t.title).lineLimit(1).font(.callout)
+                                    .foregroundStyle(critical.contains(t.id) ? Color.red : Color.primary)
                             }
                             .frame(width: labelWidth, height: rowHeight, alignment: .leading)
                             .padding(.leading, 8)
@@ -184,6 +208,15 @@ struct GanttView: View {
                     }
                 }
             }
+        }
+        .confirmationDialog("Replace the saved baseline with the current dates?", isPresented: $confirmBaseline) {
+            Button("Replace baseline") { saveBaseline() }
+        }
+    }
+
+    private func saveBaseline() {
+        for t in tasks where t.startDate != nil || t.dueDate != nil {
+            store.updateTask(t.id) { $0.baselineStart = $0.startDate; $0.baselineDue = $0.dueDate }
         }
     }
 
@@ -222,7 +255,20 @@ struct GanttView: View {
     }
 
     @ViewBuilder
+    private func baselineBar(_ t: TaskItem, row: Int, start: Date) -> some View {
+        if showBaseline, let s = t.baselineStart ?? t.baselineDue, let e = t.baselineDue ?? t.baselineStart {
+            let x0 = x(for: s, start: start)
+            Capsule().fill(Color.secondary.opacity(0.5))
+                .frame(width: max(x(for: e, start: start) + dayWidth - x0, dayWidth), height: 4)
+                .offset(x: x0, y: 36 + CGFloat(row) * rowHeight + rowHeight - 6)
+                .help("Baseline \(s.formatted(date: .abbreviated, time: .omitted)) → \(e.formatted(date: .abbreviated, time: .omitted))")
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
     private func bar(_ t: TaskItem, row: Int, start: Date) -> some View {
+        baselineBar(t, row: row, start: start)
         if let (x0, w) = barFrame(t, start: start) {
             let color = Color(hex: store.status(of: t)?.colorHex ?? "#7B68EE")
             let off = dragOffsets[t.id] ?? 0
@@ -232,6 +278,7 @@ struct GanttView: View {
                         .frame(width: dayWidth, height: rowHeight - 10)
                 } else {
                     RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.85))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.red, lineWidth: critical.contains(t.id) ? 2 : 0))
                         .overlay(alignment: .leading) {
                             Text(t.title).font(.caption2.bold()).foregroundStyle(.white).lineLimit(1).padding(.horizontal, 6)
                         }
@@ -253,12 +300,13 @@ struct GanttView: View {
                         }
                     }
             )
-            .help("\(t.title)\n\(t.startDate?.formatted(date: .abbreviated, time: .omitted) ?? "–") → \(t.dueDate?.formatted(date: .abbreviated, time: .omitted) ?? "–")")
+            .help("\(t.title)\n\(t.startDate?.formatted(date: .abbreviated, time: .omitted) ?? "–") → \(t.dueDate?.formatted(date: .abbreviated, time: .omitted) ?? "–")\(critical.contains(t.id) ? "\nOn the critical path" : "")\(slip(t) != 0 ? "\n\(abs(slip(t))) day(s) \(slip(t) > 0 ? "late" : "early") vs baseline" : "")")
         }
     }
 
     private func dependencyLines(start: Date) -> some View {
         let index = Dictionary(uniqueKeysWithValues: tasks.enumerated().map { ($1.id, $0) })
+        let hot = critical
         return Canvas { ctx, _ in
             for (row, t) in tasks.enumerated() {
                 for b in t.blockedBy {
@@ -269,7 +317,8 @@ struct GanttView: View {
                     var path = Path()
                     path.move(to: p0)
                     path.addCurve(to: p1, control1: CGPoint(x: p0.x + 20, y: p0.y), control2: CGPoint(x: p1.x - 20, y: p1.y))
-                    ctx.stroke(path, with: .color(.orange), lineWidth: 1.5)
+                    let onPath = hot.contains(t.id) && hot.contains(b)
+                    ctx.stroke(path, with: .color(onPath ? .red : .orange), lineWidth: onPath ? 2.5 : 1.5)
                     var head = Path()
                     head.move(to: p1)
                     head.addLine(to: CGPoint(x: p1.x - 6, y: p1.y - 4))

@@ -583,6 +583,42 @@ struct CustomFieldEditor: View {
                         .onTapGesture { set(Int(value) == i ? "" : String(i)) }
                 }
             }
+        case .phone:
+            HStack {
+                TextField("+971 …", text: text).textFieldStyle(.roundedBorder)
+                if !compact, !value.isEmpty, let u = URL(string: "tel:" + value.filter { $0.isNumber || $0 == "+" }) {
+                    Button { NSWorkspace.shared.open(u) } label: { Image(systemName: "phone") }.buttonStyle(.plain)
+                }
+            }
+        case .location:
+            HStack {
+                TextField("Address or place", text: text).textFieldStyle(.roundedBorder)
+                if !compact, !value.isEmpty, let q = value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed), let u = URL(string: "maps://?q=\(q)") {
+                    Button { NSWorkspace.shared.open(u) } label: { Image(systemName: "map") }.buttonStyle(.plain).help("Open in Maps")
+                }
+            }
+        case .people:
+            let ids = value.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+            Menu {
+                ForEach(store.data.members) { m in
+                    Button {
+                        let next = ids.contains(m.id) ? ids.filter { $0 != m.id } : ids + [m.id]
+                        set(next.map(\.uuidString).joined(separator: ","))
+                    } label: { Label(m.name, systemImage: ids.contains(m.id) ? "checkmark" : "person") }
+                }
+            } label: { AvatarStack(ids: ids, size: compact ? 18 : 22) }
+            .menuStyle(.borderlessButton).fixedSize()
+        case .progress:
+            let p = store.task(taskId).map { store.progress(of: $0) } ?? 0
+            HStack(spacing: 6) {
+                ProgressView(value: Double(p), total: 100).frame(width: compact ? 60 : 110)
+                Text("\(p)%").font(.caption).monospacedDigit()
+            }
+        case .formula:
+            let r = store.task(taskId).map { store.formulaValue($0, field).display } ?? ""
+            Text(r.isEmpty ? "—" : r).monospacedDigit()
+                .foregroundStyle(r.hasPrefix("#") ? Color.red : Color.secondary)
+                .help(field.options.first.map { "= " + $0 } ?? "")
         }
     }
 }

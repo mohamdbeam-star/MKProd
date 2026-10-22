@@ -7,6 +7,7 @@ import { APP_BUILD, APP_VERSION, reloadToLatest, useUpdateAvailable } from './ve
 import { AppCtx, Avatars, Modal, useApp } from './ui';
 import { HomePage, InboxPage, TaskDrawer, TasksPage, deleteFolder, deleteList, deleteSpace } from './pages/Tasks';
 import { ChatPage, DocsPage, GoalsPage, TeamPage, TimesheetPage, TrashPage } from './pages/Workspace';
+import { DirectoryPage, FieldsEditor, PortfolioPage, ResourcesPage } from './pages/Advanced';
 import {
   AlertsPage, AnalyticsPage, AuditPage, BudgetsPage, CatalogPage, ContractsPage, FinanceOverview, FinanceSettingsPage,
   OrdersPage, ReportsPage, SavingsPage,
@@ -291,7 +292,7 @@ function WorkspacePicker({ session, manual, onPick, onSignOut }: { session: Sess
         <div className="row"><div className="logo">MK</div><h2 className="grow">Choose a workspace</h2><button className="btn ghost sm" onClick={onSignOut}>Sign out</button></div>
         <div className="small muted">Signed in as {session.user.email}</div>
         {list === null && !error && <p className="muted">Loading…</p>}
-        {list?.map((w) => <button key={w.id} className="btn" style={{ justifyContent: 'space-between' }} onClick={() => onPick(w)}><span>{w.name}</span><span className="small muted">{w.role}</span></button>)}
+        {list?.map((w) => <button key={w.id} className="btn" style={{ justifyContent: 'space-between' }} onClick={() => onPick(w)}><span>{w.name}</span><span className="small muted">{w.locked ? '🔒 locked · ' : ''}{w.role}</span></button>)}
         {list?.length === 0 && <p className="small muted">No workspaces yet. Create one, or enter the invite code an admin gave you.</p>}
         <div className="row"><input className="input grow" placeholder="Invite code (XXXX-XXXX-XXXX)" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" /><button className="btn" disabled={code.replace(/\W/g, '').length < 12} onClick={join}>Join</button></div>
         <div className="row"><input className="input grow" placeholder="New workspace name" value={name} onChange={(e) => setName(e.target.value)} /><button className="btn primary" onClick={create}>Create</button></div>
@@ -368,6 +369,9 @@ function Page({ route }: { route: string }) {
     case 'docs': return <DocsPage id={id} />;
     case 'chat': return <ChatPage id={id} />;
     case 'goals': return <GoalsPage />;
+    case 'portfolio': return <PortfolioPage />;
+    case 'resources': return <ResourcesPage />;
+    case 'directory': return <DirectoryPage />;
     case 'time': return <TimesheetPage />;
     case 'trash': return <TrashPage />;
     case 'team': return <TeamPage />;
@@ -394,6 +398,7 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [wsMenu, setWsMenu] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; items: { label: string; danger?: boolean; act: () => void }[] } | null>(null);
+  const [fieldsFor, setFieldsFor] = useState<ID | null>(null);
   useEffect(() => { api<{ workspaces: WorkspaceInfo[] }>('/api/me').then((r) => setWorkspaces(r.workspaces)).catch(() => {}); }, []);
   useEffect(() => {
     if (!menu && !wsMenu) return;
@@ -411,6 +416,7 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
   const spaceMenu = (s: { id: ID; name: string }) => [
     { label: 'Rename space', act: () => rename('space', s.name, (v) => engine.update('spaces', s.id, (x) => { x.name = v; })) },
     { label: 'New list', act: () => addList(s.id) },
+    { label: 'Custom fields…', act: () => setFieldsFor(s.id) },
     { label: 'Delete space…', danger: true, act: () => {
       const n = engine.list('lists').filter((l) => l.spaceId === s.id).reduce((a, l) => a + engine.list('tasks').filter((t) => t.listId === l.id).length, 0);
       if (confirm(`Delete the space "${s.name}" with its lists and ${n} task(s)? This cannot be undone.`)) { deleteSpace(engine, s.id); go('home'); toast('Space deleted'); }
@@ -512,7 +518,10 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
           {nav('docs', '📝', 'Docs')}
           {nav('chat', '💬', 'Chat')}
           {nav('goals', '🎯', 'Goals')}
+          {nav('portfolio', '🗂', 'Portfolio')}
+          {nav('resources', '📅', 'Resources')}
           {nav('time', '⏱', 'Timesheets')}
+          {nav('directory', '📚', 'Content directory')}
           {nav('trash', '🗑', 'Trash')}
           <h4>Budget & procurement</h4>
           {nav('finance', '📊', 'Overview')}
@@ -557,6 +566,7 @@ function Shell({ children, onSwitch, onSwitchTo, onSignOut }: { children: React.
         )}
         <div className="page">{children}</div>
       </main>
+      {fieldsFor && engine.get('spaces', fieldsFor) && <FieldsEditor space={engine.get('spaces', fieldsFor)!} onClose={() => setFieldsFor(null)} />}
       {search && <SearchModal onClose={() => setSearch(false)} onTask={(id) => { setSearch(false); openTask(id); }} />}
       {menu && (
         <div className="menu" style={{ position: 'fixed', left: menu.x, top: menu.y, zIndex: 60 }} onClick={(e) => e.stopPropagation()}>
@@ -574,7 +584,7 @@ function title(route: string, engine: SyncEngine) {
   if (p === 'list') return engine.get('lists', id)?.name ?? 'List';
   if (p === 'space') return engine.get('spaces', id)?.name ?? 'Space';
   if (p === 'folder') return engine.get('folders', id)?.name ?? 'Folder';
-  return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', docs: 'Docs', chat: 'Chat', goals: 'Goals', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
+  return ({ home: 'Home', inbox: 'Inbox', mine: 'My Tasks', everything: 'Everything', docs: 'Docs', chat: 'Chat', goals: 'Goals', portfolio: 'Portfolio', resources: 'Resource management', directory: 'Content directory', time: 'Timesheets', trash: 'Trash', team: 'Team & account',
     finance: 'Finance overview', alerts: 'Alerts', budgets: 'Budgets', orders: 'Orders & expenses', approvals: 'My approvals', catalog: 'Shopping catalog', contracts: 'Contracts',
     savings: 'Savings', analytics: 'Analytics', reports: 'Reports', audit: 'Audit log', fsettings: 'Finance settings', apps: 'Get the apps' } as Record<string, string>)[p] ?? 'MK Prod';
 }

@@ -3,6 +3,8 @@ import { ID, Task, addDays, fmtDate, fromInputDate, iso, newTask, startOfDay, to
 import { Avatar, Avatars, Empty, Flag, Markdown, PrioritySelect, Seg, StatusPill, Tag, isClosed, member, statusOf, useApp } from '../ui';
 import type { SyncEngine } from '../sync';
 import { Attachments } from './Procurement';
+import { ChartView, FieldsEditor, TaskFields } from './Advanced';
+import { criticalPath, fieldDisplay, isComputedField } from '../features';
 
 // ---------------------------------------------------------------- task helpers (mirror Store.swift)
 
@@ -220,7 +222,7 @@ export function InboxPage() {
 
 // ---------------------------------------------------------------- task container
 
-type View = 'list' | 'board' | 'calendar' | 'table' | 'gantt' | 'workload' | 'mindmap' | 'form';
+type View = 'list' | 'board' | 'calendar' | 'table' | 'gantt' | 'chart' | 'workload' | 'mindmap' | 'form';
 type Scope = { kind: 'everything' } | { kind: 'mine' } | { kind: 'space' | 'folder' | 'list'; id: ID };
 
 export function TasksPage({ scope }: { scope: Scope }) {
@@ -276,7 +278,7 @@ export function TasksPage({ scope }: { scope: Scope }) {
   return (
     <div>
       <div className="toolbar">
-        <Seg value={view} onChange={setV} options={[{ value: 'list', label: '☰ List' }, { value: 'board', label: '▦ Board' }, { value: 'calendar', label: '📅 Calendar' }, { value: 'table', label: '▤ Table' }, { value: 'gantt', label: '▬ Gantt' }, { value: 'workload', label: '👥 Workload' }, { value: 'mindmap', label: '🧠 Mind Map' }, { value: 'form', label: '📋 Form' }]} />
+        <Seg value={view} onChange={setV} options={[{ value: 'list', label: '☰ List' }, { value: 'board', label: '▦ Board' }, { value: 'calendar', label: '📅 Calendar' }, { value: 'table', label: '▤ Table' }, { value: 'gantt', label: '▬ Gantt' }, { value: 'chart', label: '📊 Chart' }, { value: 'workload', label: '👥 Workload' }, { value: 'mindmap', label: '🧠 Mind Map' }, { value: 'form', label: '📋 Form' }]} />
         <input className="input" placeholder="+ Add a task and press Enter" value={quick} onChange={(e) => setQuick(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addQuick()} style={{ width: 260 }} disabled={!defaultList} />
         <span className="right" />
         <input className="input" placeholder="Filter" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 140 }} />
@@ -292,6 +294,7 @@ export function TasksPage({ scope }: { scope: Scope }) {
       {defaultList && view === 'calendar' && <CalendarView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'table' && <TableView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'gantt' && <GanttView tasks={tasks} onOpen={openTask} />}
+      {defaultList && view === 'chart' && <ChartView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'workload' && <WorkloadView tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'mindmap' && <MindMapView title={scopeTitle(engine, scope)} tasks={tasks} onOpen={openTask} />}
       {defaultList && view === 'form' && <FormView defaultList={defaultList} lists={listIds} />}
@@ -535,15 +538,38 @@ function CalendarView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: ID) => vo
 
 function TableView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: ID) => void }) {
   const { engine } = useApp();
-  const [sort, setSort] = useState<'title' | 'due' | 'priority'>('due');
-  const sorted = [...tasks].sort((a, b) => sort === 'title' ? a.title.localeCompare(b.title) : sort === 'priority' ? b.priority - a.priority : (a.dueDate ?? '9').localeCompare(b.dueDate ?? '9'));
+  const [sort, setSort] = useState<string>('due');
+  const [editFields, setEditFields] = useState(false);
+  // Custom-field columns: the fields of every space shown, once each.
+  const spaces = [...new Map(tasks.map((t) => engine.get('spaces', engine.get('lists', t.listId)?.spaceId)).filter(Boolean).map((sp) => [sp!.id, sp!])).values()];
+  const fields = spaces.flatMap((sp) => sp.fields);
+  const fieldOf = (t: Task, name: string) => engine.get('spaces', engine.get('lists', t.listId)?.spaceId)?.fields.find((f) => f.name === name);
+  const names = [...new Set(fields.map((f) => f.name))];
+  const cell = (t: Task, name: string) => { const f = fieldOf(t, name); return f ? fieldDisplay(engine, t, f) : ''; };
+  const sorted = [...tasks].sort((a, b) => {
+    if (sort === 'title') return a.title.localeCompare(b.title);
+    if (sort === 'priority') return b.priority - a.priority;
+    if (sort.startsWith('f:')) {
+      const x = cell(a, sort.slice(2)), y = cell(b, sort.slice(2));
+      const nx = parseFloat(x), ny = parseFloat(y);
+      return !isNaN(nx) && !isNaN(ny) ? ny - nx : x.localeCompare(y);
+    }
+    return (a.dueDate ?? '9').localeCompare(b.dueDate ?? '9');
+  });
   return (
     <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+      {spaces.length === 1 && engine.canWrite && (
+        <div className="row" style={{ padding: '8px 10px', borderBottom: '1px solid var(--line)' }}>
+          <span className="small muted grow">{fields.length ? `${fields.length} custom field${fields.length === 1 ? '' : 's'}` : 'Add custom fields (numbers, money, people, formulas…) as extra columns'}</span>
+          <button className="btn sm" onClick={() => setEditFields(true)}>⚙ Fields</button>
+        </div>
+      )}
       <table className="t">
         <thead><tr>
           <th onClick={() => setSort('title')} style={{ cursor: 'pointer' }}>Name</th><th>Status</th><th>Assignees</th>
           <th onClick={() => setSort('priority')} style={{ cursor: 'pointer' }}>Priority</th><th>Start</th>
           <th onClick={() => setSort('due')} style={{ cursor: 'pointer' }}>Due</th><th className="num">Estimate</th><th>Tags</th><th>List</th>
+          {names.map((n) => <th key={n} onClick={() => setSort('f:' + n)} style={{ cursor: 'pointer' }}>{n}</th>)}
         </tr></thead>
         <tbody>{sorted.map((t) => (
           <tr key={t.id} className="click" onClick={() => onOpen(t.id)}>
@@ -552,42 +578,98 @@ function TableView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: ID) => void 
             <td>{fmtDate(t.startDate)}</td><td className={isOverdue(engine, t) ? 'red' : ''}>{fmtDate(t.dueDate)}</td>
             <td className="num">{t.estimateMinutes ? `${Math.round(t.estimateMinutes / 6) / 10}h` : ''}</td>
             <td>{t.tags.map((x) => <Tag key={x} t={x} />)}</td><td className="muted">{engine.get('lists', t.listId)?.name}</td>
+            {names.map((n) => {
+              const f = fieldOf(t, n); const v = cell(t, n);
+              return <td key={n} className={f && (['number', 'money', 'formula', 'progress'].includes(f.type)) ? 'num' : ''} style={f && isComputedField(f) ? { color: v.startsWith('#') ? 'var(--red)' : 'var(--muted)' } : undefined}>{v}</td>;
+            })}
           </tr>
         ))}</tbody>
+        {names.some((n) => fields.some((f) => f.name === n && ['number', 'money', 'formula'].includes(f.type))) && (
+          <tfoot><tr><td colSpan={9} className="small muted">Sum</td>
+            {names.map((n) => {
+              const numeric = fields.some((f) => f.name === n && ['number', 'money', 'formula'].includes(f.type));
+              const vals = sorted.map((t) => parseFloat(cell(t, n))).filter((x) => !isNaN(x));
+              return <td key={n} className="num small"><strong>{numeric && vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) * 100) / 100 : ''}</strong></td>;
+            })}</tr></tfoot>
+        )}
       </table>
+      {editFields && spaces[0] && <FieldsEditor space={spaces[0]} onClose={() => setEditFields(false)} />}
     </div>
   );
 }
 
+/** Timeline with dependency-aware critical path and saved baselines (planned dates) under each bar. */
 function GanttView({ tasks, onOpen }: { tasks: Task[]; onOpen: (id: ID) => void }) {
-  const { engine } = useApp();
+  const { engine, toast } = useApp();
+  const [showCritical, setShowCritical] = useState(true);
+  const [showBaseline, setShowBaseline] = useState(true);
   const dated = tasks.filter((t) => t.startDate || t.dueDate);
-  const dates = dated.flatMap((t) => [t.startDate, t.dueDate].filter(Boolean).map((d) => new Date(d!).getTime()));
+  const critical = useMemo(() => criticalPath(dated), [engine.version, tasks.length]);
+  const hasBaseline = dated.some((t) => t.baselineStart || t.baselineDue);
+  const dates = dated.flatMap((t) => [t.startDate, t.dueDate, showBaseline ? t.baselineStart : undefined, showBaseline ? t.baselineDue : undefined].filter(Boolean).map((d) => new Date(d!).getTime()));
   const start = addDays(startOfDay(new Date(Math.min(Date.now(), ...dates))), -3);
   const end = addDays(startOfDay(new Date(Math.max(Date.now(), ...dates))), 10);
-  const dayW = 30, rowH = 30;
+  const dayW = 30, rowH = 34;
   const days = Math.max(21, Math.round((end.getTime() - start.getTime()) / 86400000));
   const x = (d: string) => Math.round((startOfDay(new Date(d)).getTime() - start.getTime()) / 86400000) * dayW;
+  const slip = (t: Task) => t.baselineDue && t.dueDate ? Math.round((startOfDay(new Date(t.dueDate)).getTime() - startOfDay(new Date(t.baselineDue)).getTime()) / 86400000) : 0;
+  const saveBaseline = () => {
+    if (hasBaseline && !confirm('Replace the saved baseline with the current dates of these tasks?')) return;
+    for (const t of dated) engine.update('tasks', t.id, (y) => {
+      if (y.startDate) y.baselineStart = y.startDate; else delete y.baselineStart;
+      if (y.dueDate) y.baselineDue = y.dueDate; else delete y.baselineDue;
+    });
+    toast(`Baseline saved for ${dated.length} task${dated.length === 1 ? '' : 's'}`);
+  };
+  const clearBaseline = () => { if (confirm('Remove the baseline from these tasks?')) for (const t of dated) engine.update('tasks', t.id, (y) => { delete y.baselineStart; delete y.baselineDue; }); };
   if (!dated.length) return <Empty icon="📊" title="No dated tasks" sub="Give tasks start or due dates to see them on the timeline." />;
+  const index = new Map(dated.map((t, i) => [t.id, i]));
+  const late = dated.filter((t) => slip(t) > 0).length;
   return (
-    <div className="gantt" style={{ height: 40 + dated.length * rowH }}>
-      <div style={{ position: 'relative', width: days * dayW + 220, height: '100%' }}>
-        {Array.from({ length: days }, (_, i) => {
-          const d = addDays(start, i);
-          return <div key={i} className="small faint" style={{ position: 'absolute', left: 220 + i * dayW, top: 0, width: dayW, height: '100%', borderLeft: '1px solid var(--line)', textAlign: 'center', background: d.getDay() % 6 === 0 ? 'var(--hover)' : undefined }}>{d.getDate()}</div>;
-        })}
-        <div style={{ position: 'absolute', left: 220 + x(iso()) + dayW / 2, top: 20, bottom: 0, width: 2, background: 'var(--red)' }} />
-        {dated.map((t, i) => {
-          const s = t.startDate ?? t.dueDate!, e = t.dueDate ?? t.startDate!;
-          const c = statusOf(engine, t)?.colorHex ?? '#7B68EE';
-          return (
-            <div key={t.id}>
-              <div className="ellipsis small" style={{ position: 'absolute', left: 8, width: 205, top: 30 + i * rowH }}>{t.title}</div>
-              <div className="bar" style={{ left: 220 + x(s), top: 28 + i * rowH, width: Math.max(dayW, x(e) - x(s) + dayW), background: c }} onClick={() => onOpen(t.id)}>{t.title}</div>
-            </div>
-          );
-        })}
+    <div className="col" style={{ gap: 8 }}>
+      <div className="row wrap">
+        <label className="row small"><input type="checkbox" checked={showCritical} onChange={(e) => setShowCritical(e.target.checked)} /> Critical path {critical.size > 0 && <span className="muted">({critical.size})</span>}</label>
+        <label className="row small"><input type="checkbox" checked={showBaseline} onChange={(e) => setShowBaseline(e.target.checked)} /> Baseline</label>
+        {hasBaseline && <span className={`small ${late ? 'red' : 'green'}`}>{late ? `${late} task${late === 1 ? '' : 's'} behind baseline` : 'On baseline'}</span>}
+        <span className="right" />
+        {engine.canWrite && <button className="btn sm" onClick={saveBaseline}>📌 Save baseline</button>}
+        {engine.canWrite && hasBaseline && <button className="btn sm ghost" onClick={clearBaseline}>Clear baseline</button>}
       </div>
+      <div className="gantt" style={{ height: 40 + dated.length * rowH }}>
+        <div style={{ position: 'relative', width: days * dayW + 220, height: '100%' }}>
+          {Array.from({ length: days }, (_, i) => {
+            const d = addDays(start, i);
+            return <div key={i} className="small faint" style={{ position: 'absolute', left: 220 + i * dayW, top: 0, width: dayW, height: '100%', borderLeft: '1px solid var(--line)', textAlign: 'center', background: d.getDay() % 6 === 0 ? 'var(--hover)' : undefined }}>{d.getDate()}</div>;
+          })}
+          <div style={{ position: 'absolute', left: 220 + x(iso()) + dayW / 2, top: 20, bottom: 0, width: 2, background: 'var(--red)' }} />
+          <svg style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }} width={days * dayW + 220} height={40 + dated.length * rowH}>
+            {dated.flatMap((t) => t.blockedBy.filter((p) => index.has(p)).map((p) => {
+              const pt = dated[index.get(p)!];
+              const x1 = 220 + x(pt.dueDate ?? pt.startDate!) + dayW, y1 = 38 + index.get(p)! * rowH;
+              const x2 = 220 + x(t.startDate ?? t.dueDate!), y2 = 38 + index.get(t.id)! * rowH;
+              const hot = showCritical && critical.has(t.id) && critical.has(p);
+              return <path key={p + t.id} d={`M${x1},${y1} C${x1 + 14},${y1} ${x2 - 14},${y2} ${x2},${y2}`} fill="none" stroke={hot ? 'var(--red)' : 'var(--muted)'} strokeWidth={hot ? 2 : 1} markerEnd="url(#arr)" />;
+            }))}
+            <defs><marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="var(--muted)" /></marker></defs>
+          </svg>
+          {dated.map((t, i) => {
+            const s = t.startDate ?? t.dueDate!, e = t.dueDate ?? t.startDate!;
+            const c = statusOf(engine, t)?.colorHex ?? '#7B68EE';
+            const bs = t.baselineStart ?? t.baselineDue, be = t.baselineDue ?? t.baselineStart;
+            const hot = showCritical && critical.has(t.id);
+            const d = slip(t);
+            return (
+              <div key={t.id}>
+                <div className="ellipsis small" style={{ position: 'absolute', left: 8, width: 205, top: 30 + i * rowH, color: hot ? 'var(--red)' : undefined, fontWeight: hot ? 600 : undefined }}>{t.title}</div>
+                {showBaseline && bs && be && <div title={`Baseline ${new Date(bs).toLocaleDateString()} → ${new Date(be).toLocaleDateString()}`} style={{ position: 'absolute', left: 220 + x(bs), top: 50 + i * rowH, width: Math.max(dayW, x(be) - x(bs) + dayW), height: 5, borderRadius: 3, background: 'var(--muted)', opacity: 0.45 }} />}
+                <div className="bar" style={{ left: 220 + x(s), top: 26 + i * rowH, width: Math.max(dayW, x(e) - x(s) + dayW), background: c, outline: hot ? '2px solid var(--red)' : undefined }} onClick={() => onOpen(t.id)}
+                  title={`${t.title}${hot ? ' · on the critical path' : ''}${d ? ` · ${d > 0 ? `${d} day${d === 1 ? '' : 's'} late` : `${-d} day${d === -1 ? '' : 's'} early`} vs baseline` : ''}`}>{t.title}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <p className="small muted">The critical path is the longest chain of dependent tasks (set them under Dependencies in a task): a delay on any of them delays the end of the whole chain. A baseline keeps today's planned dates so later slips show as the gap between the bar and the grey line.</p>
     </div>
   );
 }
@@ -660,6 +742,27 @@ export function TaskDrawer({ id, onClose }: { id: ID; onClose: () => void }) {
                 ? <button className="btn sm danger" onClick={() => engine.update('timeEntries', running.id, (x) => { x.end = iso(); })}>■ Stop</button>
                 : <button className="btn sm" onClick={() => engine.put('timeEntries', { id: uid(), taskId: id, memberId: engine.me, note: '', start: iso(), billable: false })}>▶ Start timer</button>}
             </div>
+          </div>
+
+          <TaskFields t={t} />
+
+          <div className="section">
+            <h3>Dependencies</h3>
+            {t.blockedBy.map((b) => engine.get('tasks', b)).filter((b): b is Task => !!b).map((b) => (
+              <div key={b.id} className="row small" style={{ padding: '2px 0' }}>
+                <span className={isClosed(engine, b) ? 'green' : 'orange'}>{isClosed(engine, b) ? '✓' : '⏳'} Waiting on</span>
+                <a href="#" className="grow" onClick={(e) => { e.preventDefault(); openTask(b.id); }}>{b.title}</a>
+                <button className="btn ghost sm" onClick={() => up((x) => { x.blockedBy = x.blockedBy.filter((y) => y !== b.id); })}>✕</button>
+              </div>
+            ))}
+            {engine.list('tasks').filter((x) => x.blockedBy.includes(id) && !x.archived).map((x) => (
+              <div key={x.id} className="row small" style={{ padding: '2px 0' }}><span className="muted">⛔ Blocking</span><a href="#" className="grow" onClick={(e) => { e.preventDefault(); openTask(x.id); }}>{x.title}</a></div>
+            ))}
+            <select className="input" style={{ width: '100%', marginTop: 4 }} value="" onChange={(e) => e.target.value && up((x) => { if (!x.blockedBy.includes(e.target.value)) x.blockedBy.push(e.target.value); })}>
+              <option value="">+ Waiting on another task…</option>
+              {engine.list('tasks').filter((x) => !x.archived && x.id !== id && !t.blockedBy.includes(x.id) && engine.get('lists', x.listId)?.spaceId === list?.spaceId)
+                .sort((a, b) => a.title.localeCompare(b.title)).map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}
+            </select>
           </div>
 
           <div className="section">

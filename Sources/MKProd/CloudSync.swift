@@ -866,6 +866,7 @@ struct SyncKind {
         make("automations", \.automations, defaults: ["enabled": true, "triggerValue": "", "actionValue": "", "runCount": 0]),
         make("dashboards", \.dashboards, defaults: ["widgets": []]),
         make("templates", \.templates, defaults: ["subtasks": []]),
+        make("resources", \.resources, defaults: ["hoursPerDay": 8, "workDays": [1, 2, 3, 4, 5], "timeOff": []]),
         // Budget & procurement
         make("entities", \.entities, defaults: ["code": "", "approvalLevels": ["Requestor", "Manager"], "roles": []]),
         make("budgets", \.budgets, defaults: ["notes": "", "lineItems": [], "created": now]),

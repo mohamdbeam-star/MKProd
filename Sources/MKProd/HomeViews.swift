@@ -550,9 +550,15 @@ struct SpaceSettingsView: View {
                                 HStack {
                                     TextField("Field name", text: $f.name)
                                     Picker("", selection: $f.type) { ForEach(FieldType.allCases) { Text($0.label).tag($0) } }
-                                        .labelsHidden().frame(width: 110)
+                                        .labelsHidden().frame(width: 170)
                                     Button { let id = f.id; DispatchQueue.main.async { store.data.spaces[i].fields.removeAll { $0.id == id } } } label: { Image(systemName: "minus.circle") }
                                         .buttonStyle(.borderless)
+                                }
+                                if f.type == .formula {
+                                    TextField("{Budget} - {Spent}", text: Binding(get: { f.options.first ?? "" }, set: { f.options = [$0] }))
+                                        .font(.system(.body, design: .monospaced))
+                                    Text("Use fields in braces and IF, ROUND, MIN, MAX, SUM, AVG, ABS, TODAY. Built-ins: {Estimate hours} {Points} {Progress} {Tracked hours} {Priority} {Subtasks} {Days left} {Start} {Due}; & joins text.")
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                                 if f.type == .dropdown {
                                     HStack {

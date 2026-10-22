@@ -35,6 +35,8 @@ export interface Task {
   /** Swift encodes [UUID: String] as a flat [key, value, key, value] array. */
   customValues: string[]; activity: Activity[]; created: string; updated: string; completedAt?: string
   order: number; archived: boolean; isMilestone: boolean; trashedAt?: string
+  /** Planned dates saved from the Gantt ("Save baseline"), drawn under the live bars to show slippage. */
+  baselineStart?: string; baselineDue?: string
 }
 
 export interface Doc { id: ID; parentId?: ID; spaceId?: ID; title: string; body: string; icon: string; created: string; updated: string; favorite: boolean }
@@ -51,6 +53,10 @@ export interface TimeEntry { id: ID; taskId?: ID; memberId: ID; note: string; st
  */
 export interface InboxItem { id: ID; date: string; text: string; taskId?: ID; target?: string; read: boolean; cleared: boolean }
 export interface Reminder { id: ID; title: string; date: string; done: boolean; taskId?: ID; notified: boolean }
+
+/** Resource management: one record per person (id = member id). `workDays` uses 0 = Sunday … 6 = Saturday. */
+export interface TimeOff { id: ID; start: string; end: string; note: string }
+export interface Resource { id: ID; hoursPerDay: number; workDays: number[]; timeOff: TimeOff[] }
 
 // Budget & procurement
 export interface FinEntity { id: ID; name: string; code: string; approvalLevels: string[]; roles: { memberId: ID; role: string }[] }
@@ -95,13 +101,13 @@ export interface Collections {
   dashboards: { id: ID; name: string }; templates: { id: ID; name: string }
   entities: FinEntity; budgets: Budget; orders: Order; savings: Saving; contracts: Contract
   catalog: CatalogItem; audit: AuditEntry; financeSettings: FinanceSettings; shares: ShareLink
-  inbox: InboxItem; reminders: Reminder
+  inbox: InboxItem; reminders: Reminder; resources: Resource
 }
 export type Kind = keyof Collections;
 export const KINDS: Kind[] = [
   'spaces', 'folders', 'lists', 'tasks', 'docs', 'whiteboards', 'channels', 'messages', 'goals', 'timeEntries',
   'automations', 'dashboards', 'templates', 'entities', 'budgets', 'orders', 'savings', 'contracts', 'catalog', 'audit', 'financeSettings', 'shares',
-  'inbox', 'reminders',
+  'inbox', 'reminders', 'resources',
 ];
 /** Kinds encrypted with the person's own key rather than the workspace key. */
 export const PERSONAL_KINDS: Kind[] = ['inbox', 'reminders'];

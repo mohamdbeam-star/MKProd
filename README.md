@@ -32,8 +32,8 @@ Requirements: macOS 14+ and the Xcode Command Line Tools. Without full Xcode, th
 |---|---|
 | Hierarchy | Workspace → Spaces (color, icon, privacy) → Folders → Lists; favorites, rename, duplicate, archive, delete |
 | Tasks | Custom statuses per Space, priorities, multiple assignees, watchers, tags, start/due dates, estimates, sprint points, milestones, recurring tasks, subtasks, checklists (with assignees), dependencies (waiting on / blocking), linked tasks, attachments, comments with @mentions and resolve, activity log |
-| Custom fields | Text, number, money, dropdown, checkbox, date, URL, email, rating (per Space) |
-| Views | List (grouped, collapsible, inline add, drag to regroup), Board (drag between columns), Calendar (month/week, drag to reschedule), Gantt (drag bars, zoom, dependency arrows, today line), Table (sortable, custom-field columns), Workload (capacity heatmap), Mind Map, Form (submissions create tasks) |
+| Custom fields | Text, number, money, dropdown, checkbox, date, URL, email, rating, people, phone, location, automatic progress and formulas (per Space; Mac and website) |
+| Views | List (grouped, collapsible, inline add, drag to regroup), Board (drag between columns), Calendar (month/week, drag to reschedule), Gantt (drag bars, zoom, dependency arrows, critical path, saved baselines, today line), Table (sortable, custom-field and formula columns), Chart (bar/donut/line by any property or field), Workload (capacity heatmap), Mind Map, Form (submissions create tasks) |
 | Filtering | Search, assignee, priority, tag, show closed, overdue only, "Me mode"; group by status/priority/assignee/due/list; sort options |
 | Home | My Work (overdue/today/next/unscheduled), reminders, recents, notepad, 7-day agenda, goals |
 | Inbox | Notifications for assignments, mentions, approvals, reminders; read/clear/restore. Synced across all your devices, private to you |
@@ -41,6 +41,9 @@ Requirements: macOS 14+ and the Xcode Command Line Tools. Without full Xcode, th
 | Whiteboards | Stickies, text, shapes, connectors, colors, resize, zoom, convert to task |
 | Chat | Channels, per-Space channels, post as any member, create task from message |
 | Goals | Folders, owners, due dates; number, currency, true/false and task-linked targets |
+| Portfolio | Every list as a project: progress vs schedule, health, owners, overdue, timeline |
+| Resources | Capacity per person (hours/day, working days, time off) vs estimated work, by week |
+| Content directory | Every space, list, doc, channel, goal, whiteboard and dashboard in one searchable table |
 | Dashboards | Cards: status donut, priority, workload, overdue, 14-day completions, time tracked, goal progress, recent activity; per-Space scope |
 | Time tracking | Global timer (toolbar, ⇧⌘T), per-task timer, manual entries, billable flag, weekly timesheets |
 | Automations | When (created / status / priority / assignee / tag / due date passed) → Then (status, priority, assign, tag, move, comment, set due, archive), scoped per Space |
@@ -59,6 +62,7 @@ The team website and the sync server are one free Cloudflare Worker with a D1 da
 - **Two-factor sign-in** (authenticator app), optional per person and enforceable per workspace by the owner; email confirmation of new accounts; sign-in alerts; a devices list; and a security log per account and per workspace.
 - **Sessions:** the website uses an HttpOnly cookie, and the Mac app stores its session and keys in the Keychain.
 - **Hardened delivery:** strict security headers on the site, and Mac data files readable only by your macOS user (on top of FileVault).
+- **Panic mode:** the owner can lock a workspace instantly; everyone else is signed out and refused (sync, team, supplier links) until it is unlocked.
 - **Right to erasure:** delete your account, delete or transfer a workspace.
 
 Design and threat notes: **[SECURITY.md](SECURITY.md)**.

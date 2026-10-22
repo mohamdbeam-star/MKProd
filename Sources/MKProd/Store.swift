@@ -9,6 +9,7 @@ enum SidebarItem: Hashable {
     case whiteboards, whiteboard(UUID)
     case chat(UUID)
     case goals, dashboards, dashboard(UUID), timesheet, automations, templates
+    case portfolio, resources, directory
     case trash, archive
     case finDashboard, finAlerts, finBudgets, finOrders, finApprovals, finCatalog, finContracts, finSavings
     case finAnalytics, finReports, finSettings, finAudit
@@ -249,6 +250,9 @@ final class Store {
         case .finReports: "Reports"
         case .finSettings: "Finance Settings"
         case .finAudit: "Audit Log"
+        case .portfolio: "Portfolio"
+        case .resources: "Resources"
+        case .directory: "Content Directory"
         }
     }
 
