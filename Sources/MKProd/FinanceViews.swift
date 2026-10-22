@@ -192,7 +192,7 @@ struct BudgetsView: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .mkCard(radius: 12)
     }
 
     private func startNew() {
@@ -679,7 +679,7 @@ struct CatalogView: View {
                             }
                             .padding(12)
                             .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
-                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                            .mkCard(radius: 10)
                             .contextMenu {
                                 if store.isFinanceAdmin {
                                     Button("Edit") { newItem = c }
@@ -731,7 +731,6 @@ struct CatalogView: View {
             Spacer()
         }
         .padding(14)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func add(_ id: UUID) {

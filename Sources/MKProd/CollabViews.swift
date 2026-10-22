@@ -170,7 +170,6 @@ struct DocEditorView: View {
             Spacer()
         }
         .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func pageRow(_ d: Doc, depth: Int) -> AnyView {

@@ -116,7 +116,7 @@ struct FinanceDashboardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .mkCard(radius: 12)
     }
 }
 

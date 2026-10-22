@@ -11,6 +11,7 @@ import {
   OrdersPage, ReportsPage, SavingsPage,
 } from './pages/Finance';
 import { SharePage } from './pages/Share';
+import { useInstallPrompt } from './pwa';
 
 const USER_KEY = 'mkprod.user';
 const WS_KEY = 'mkprod.workspace';
@@ -373,6 +374,7 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState(false);
   const [expanded, setExpanded] = useState<Set<ID>>(new Set());
+  const install = useInstallPrompt();
   const nav = (r: string, icon: string, label: string, badge?: number) => (
     <div className={`nav ${route === r || route.startsWith(r + '/') ? 'on' : ''}`} onClick={() => { go(r); setOpen(false); }}>
       <span className="ic">{icon}</span><span className="ellipsis">{label}</span>{badge ? <span className="badge">{badge}</span> : null}
@@ -453,6 +455,7 @@ function Shell({ children, onSwitch, onSignOut }: { children: React.ReactNode; o
           {nav('reports', '📑', 'Reports')}
           {nav('audit', '📜', 'Audit log')}
           {nav('fsettings', '⚙️', 'Finance settings')}
+          {install && <div className="nav install" onClick={() => install()} title="Adds MK Prod to your Start menu / Dock as its own window. No admin rights needed."><span className="ic">⬇</span>Install as an app</div>}
         </div>
         <div className="side-foot">
           <div className="grow" style={{ minWidth: 0 }}>

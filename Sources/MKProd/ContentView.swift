@@ -11,6 +11,7 @@ struct ContentView: View {
         } detail: {
             DetailRouter(item: store.selection ?? .home)
                 .id(store.selection)
+                .background(MKBackdrop())
         }
         .inspector(isPresented: Binding(get: { store.openTaskId != nil }, set: { if !$0 { store.openTaskId = nil } })) {
             if let id = store.openTaskId, store.task(id) != nil {
@@ -43,7 +44,7 @@ struct ContentView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             if store.cloud.isConnected && !store.cloud.canWrite {
                 Label("View-only access: your changes won't be shared with the team.", systemImage: "eye")
-                    .font(.callout).frame(maxWidth: .infinity).padding(6).background(Color.orange.opacity(0.15))
+                    .font(.callout).frame(maxWidth: .infinity).padding(6).mkCard(radius: 0, tint: .orange)
             }
         }
         .alert("MK Prod", isPresented: Binding(get: { store.lastError != nil }, set: { if !$0 { store.lastError = nil } })) {

@@ -63,7 +63,7 @@ struct GoalsView: View {
             }
         }
         .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .mkCard(radius: 12)
     }
 
     private func targetLabel(_ t: GoalTarget) -> String {
@@ -250,8 +250,7 @@ struct WidgetCard: View {
             content.frame(height: 220)
         }
         .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .mkCard(radius: 12)
     }
 
     @ViewBuilder

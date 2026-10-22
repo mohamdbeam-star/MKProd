@@ -1,6 +1,12 @@
 # MK Prod
 
-A native macOS (SwiftUI) productivity workspace with a ClickUp-style feature set. It's an original implementation with no ClickUp code, assets or branding. It's local-first: everything is stored in `~/Library/Application Support/MKProd/workspace.json`.
+A team workspace for tasks, budgets, orders and contracts, in three forms that share one encrypted data set:
+
+- **Mac app** (native SwiftUI, Liquid Glass design on macOS 26, local-first; data in `~/Library/Application Support/MKProd/workspace.json`)
+- **Website** at https://mkprod.mohamd-beam.workers.dev (same glass design)
+- **Windows app**: the website installed as an app from Edge or Chrome, per user, no admin rights: **[WINDOWS.md](WINDOWS.md)**
+
+It's an original implementation with a ClickUp-style feature set, no ClickUp code, assets or branding.
 
 ## Build & run
 

@@ -210,3 +210,100 @@ table.t td.num, table.t th.num { text-align: right; font-variant-numeric: tabula
   .record h1 { font-size: 22px; } .record table { width: 100%; border-collapse: collapse; } .record th, .record td { border-bottom: 1px solid #ccc; padding: 4px 6px; text-align: left; } .record .num { text-align: right; }
   .share .btn { display: none; }
 }
+
+/* ================================================================
+   Liquid glass theme: translucent layered surfaces over a soft, tinted backdrop.
+   Structural surfaces (sidebar, top bar, drawers, dialogs) blur what is behind them;
+   cards are lighter, frosted panes so dozens on one page stay cheap to draw.
+   ================================================================ */
+:root {
+  --bg: #eef0f8;
+  --panel: rgba(255, 255, 255, 0.62);
+  --panel-solid: #ffffff;
+  --side: rgba(255, 255, 255, 0.42);
+  --line: rgba(31, 35, 48, 0.09);
+  --glass-edge: rgba(255, 255, 255, 0.65);
+  --glass-shine: rgba(255, 255, 255, 0.9);
+  --hover: rgba(31, 35, 48, 0.05);
+  --shadow: 0 1px 2px rgba(20, 24, 40, 0.05), 0 10px 30px rgba(20, 24, 40, 0.10);
+  --radius: 16px;
+  --blur: blur(22px) saturate(170%);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151b;
+    --panel: rgba(36, 38, 48, 0.55);
+    --panel-solid: #22242c;
+    --side: rgba(22, 23, 30, 0.45);
+    --line: rgba(255, 255, 255, 0.09);
+    --glass-edge: rgba(255, 255, 255, 0.12);
+    --glass-shine: rgba(255, 255, 255, 0.18);
+    --hover: rgba(255, 255, 255, 0.06);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 40px rgba(0, 0, 0, 0.45);
+  }
+}
+body {
+  background:
+    radial-gradient(900px 600px at 8% -10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
+    radial-gradient(700px 500px at 100% 0%, color-mix(in srgb, #d6409f 14%, transparent), transparent 60%),
+    radial-gradient(800px 600px at 60% 110%, color-mix(in srgb, #12b5cb 14%, transparent), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+}
+.glass, .side, .topbar, .drawer, .modal, .toast, .banner, .auth .card {
+  background: var(--panel);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-shine), var(--shadow);
+}
+.side { background: var(--side); border-width: 0 1px 0 0; box-shadow: inset 0 1px 0 var(--glass-shine); }
+.topbar { border-width: 0 0 1px; box-shadow: none; background: var(--side); }
+.card {
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 1px 2px rgba(20, 24, 40, 0.04), 0 6px 18px rgba(20, 24, 40, 0.06);
+  border-radius: var(--radius);
+}
+.card .card { background: color-mix(in srgb, var(--panel) 60%, transparent); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.kpi { background: var(--panel); border: 1px solid var(--glass-edge); box-shadow: inset 0 1px 0 var(--glass-shine); }
+.tcard { background: var(--panel); border-color: var(--glass-edge); border-radius: 12px; box-shadow: inset 0 1px 0 var(--glass-shine), 0 2px 8px rgba(20, 24, 40, 0.06); }
+.col-b { background: color-mix(in srgb, var(--panel) 45%, transparent); border: 1px solid var(--glass-edge); }
+.cal .d, .gantt, table.t th { background: var(--panel-solid); }
+.cal .d.out { background: color-mix(in srgb, var(--panel-solid) 55%, transparent); }
+.drawer { border-radius: 18px 0 0 18px; border-width: 1px 0 1px 1px; }
+.modal { border-radius: 20px; }
+.toast { background: color-mix(in srgb, var(--text) 86%, transparent); color: var(--bg); border-radius: 999px; padding: 9px 18px; border-color: rgba(255, 255, 255, 0.2); }
+.scrim { background: rgba(10, 12, 20, 0.28); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+
+.btn, .input, select.input, textarea.input, .seg {
+  background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  border-color: var(--glass-edge);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 var(--glass-shine);
+}
+.btn { transition: transform 0.12s ease, background 0.15s ease, box-shadow 0.15s ease; }
+.btn:hover { background: color-mix(in srgb, var(--panel-solid) 80%, transparent); }
+.btn:active { transform: scale(0.97); }
+.btn.primary { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent)); border-color: transparent; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 4px 14px color-mix(in srgb, var(--accent) 40%, transparent); }
+.btn.ghost { background: transparent; box-shadow: none; }
+.btn.ghost:hover { background: var(--hover); }
+.input:focus { border-color: color-mix(in srgb, var(--accent) 60%, transparent); box-shadow: inset 0 1px 0 var(--glass-shine), 0 0 0 4px var(--accent-soft); }
+.seg { padding: 2px; gap: 2px; }
+.seg button { border-right: none; border-radius: 8px; }
+.seg button.on { background: var(--panel-solid); box-shadow: 0 1px 3px rgba(20, 24, 40, 0.12); }
+.nav { border-radius: 10px; }
+.nav.on { background: var(--panel-solid); color: var(--accent); box-shadow: inset 0 1px 0 var(--glass-shine), 0 1px 3px rgba(20, 24, 40, 0.10); }
+.nav.install { margin-top: 14px; color: var(--accent); }
+.side-foot { border-top-color: var(--line); }
+.logo { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 16px rgba(123, 104, 238, 0.35); }
+.pill, .badge, .tag { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25); }
+.auth { background: none; }
+.auth .card { border-radius: 22px; }
+.section { border-top-color: var(--line); }
+.banner { border-radius: 0; border-width: 0 0 1px; box-shadow: none; }
+.record { background: #fff; }
+@media (prefers-reduced-transparency: reduce) {
+  .glass, .side, .topbar, .drawer, .modal, .toast, .banner, .auth .card, .card { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--panel-solid); }
+}
+@media print { body { background: #fff; } .card { background: #fff; box-shadow: none; } }

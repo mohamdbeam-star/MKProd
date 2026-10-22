@@ -68,8 +68,7 @@ struct HomeView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 240, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.06)))
+        .mkCard(radius: 12)
     }
 
     private var myWork: some View {

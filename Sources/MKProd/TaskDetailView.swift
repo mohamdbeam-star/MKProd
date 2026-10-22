@@ -28,7 +28,7 @@ struct TaskDetailView: View {
                 content.padding(18)
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .mkSurface()
     }
 
     private var content: some View {

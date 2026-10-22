@@ -216,7 +216,7 @@ struct BulkActionBar: View {
         }
         .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .mkCard(radius: 12, interactive: true)
         .shadow(radius: 8, y: 2)
         .padding(16)
     }

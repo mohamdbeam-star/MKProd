@@ -628,7 +628,7 @@ struct BoardCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .mkCard(radius: 8)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(store.openTaskId == task.id ? Color.accentColor : Color.primary.opacity(0.08)))
         .shadow(color: .black.opacity(0.05), radius: 2, y: 1)
         .contentShape(Rectangle())
