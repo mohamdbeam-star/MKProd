@@ -4,7 +4,7 @@ A team workspace for tasks, budgets, orders and contracts, in three forms that s
 
 - **Mac app** (native SwiftUI, Liquid Glass design on macOS 26, local-first; data in `~/Library/Application Support/MKProd/workspace.json`)
 - **Website** at https://mkprod.mohamd-beam.workers.dev (same glass design)
-- **Windows app**: the website installed as an app from Edge or Chrome, per user, no admin rights: **[WINDOWS.md](WINDOWS.md)**
+- **Windows app** (`.exe`, per user, no admin rights) and **Android app** (`.apk`, foldable-aware): **[WINDOWS.md](WINDOWS.md)**, **[ANDROID.md](ANDROID.md)**
 
 It's an original implementation: project management (spaces, lists, tasks, docs, chat, goals, time tracking) and procurement (budgets, approvals, orders, catalog, contracts) in one encrypted workspace.
 
@@ -12,9 +12,10 @@ It's an original implementation: project management (spaces, lists, tasks, docs,
 
 - **Mac:** [Releases → MK Prod for Mac](https://github.com/mohamdbeam-star/MKProd/releases): open the `.dmg`, drag MK Prod to Applications. First launch: System Settings → Privacy & Security → **Open Anyway** (the app is not notarized with Apple). Universal (Apple Silicon + Intel), macOS 14+, Liquid Glass on macOS 26.
 - **Windows:** [Releases → MK Prod for Windows](https://github.com/mohamdbeam-star/MKProd/releases): per-user setup or portable `.exe`, no admin rights. See [WINDOWS.md](WINDOWS.md).
+- **Android:** [Releases → MK Prod for Android](https://github.com/mohamdbeam-star/MKProd/releases): `.apk` for Android 7+, phones, tablets and foldables. See [ANDROID.md](ANDROID.md).
 - **Web:** https://mkprod.mohamd-beam.workers.dev, installable as an app from the sidebar.
 
-Both installers are built by GitHub Actions (`.github/workflows/mac.yml`, `windows.yml`) from the sources here; bump `VERSION` (Mac) or `desktop/package.json` (Windows) and push to publish a new release.
+All three installers are built by GitHub Actions (`.github/workflows/mac.yml`, `windows.yml`, `android.yml`) from the sources here; bump `VERSION` (Mac, Android) or `desktop/package.json` (Windows) and push to publish a new release.
 
 ## Build & run from source
 
