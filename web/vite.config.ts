@@ -28,6 +28,7 @@ function appsManifest(): Plugin {
         { platform: 'mac', version, page: `https://github.com/${REPO}/releases/tag/mac-v${version}`, assets: [dl(`mac-v${version}`, `MK-Prod-${version}-mac.dmg`), dl(`mac-v${version}`, `MK-Prod-${version}-mac.zip`)] },
         { platform: 'windows', version, page: `https://github.com/${REPO}/releases/tag/windows-v${version}`, assets: [dl(`windows-v${version}`, `MK-Prod-${version}-win-x64.exe`), dl(`windows-v${version}`, `MK-Prod-${version}-portable.exe`)] },
         { platform: 'android', version, page: `https://github.com/${REPO}/releases/tag/android-v${version}`, assets: [dl(`android-v${version}`, `MK-Prod-${version}-android.apk`)] },
+        { platform: 'ios', version, page: `https://github.com/${REPO}/releases/tag/ios-v${version}`, assets: [dl(`ios-v${version}`, `MK-Prod-${version}-ios-unsigned.ipa`)] },
       ];
       this.emitFile({ type: 'asset', fileName: 'apps.json', source: JSON.stringify({ apps, releases: `https://github.com/${REPO}/releases`, version, build: BUILD }, null, 2) });
       this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify({ version, build: BUILD, builtAt: new Date().toISOString() }) });

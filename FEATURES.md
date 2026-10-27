@@ -1,6 +1,6 @@
 # MK Prod features
 
-Everything below is available in the Mac app and on the website (and therefore in the Windows app), unless marked.
+Everything below is available in the Mac app and on the website, and therefore in the Windows, Android and iPhone/iPad apps, unless marked. Android and the website lay themselves out around the hinge of folding phones (book and tabletop postures).
 
 ## Work management
 

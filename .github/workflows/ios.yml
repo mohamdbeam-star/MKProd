@@ -1,0 +1,101 @@
+# Builds MK Prod for iPhone and iPad on GitHub's macOS machines and publishes a GitHub Release.
+# Runs whenever ios/ or VERSION changes on main, or by hand.
+#
+# Apple only lets iPhones install apps signed by an Apple Developer account. So:
+#  • Always: a compile check, and an unsigned .ipa on the release (sideload it with Sideloadly or
+#    AltStore and a free Apple ID; see IOS.md).
+#  • With the App Store Connect secrets below: the app is also signed and uploaded to TestFlight
+#    automatically, where the team installs it with Apple's TestFlight app.
+#      APPLE_TEAM_ID        10-character Team ID (developer.apple.com → Membership)
+#      ASC_KEY_ID           App Store Connect API key id (Users and Access → Integrations → Keys)
+#      ASC_ISSUER_ID        issuer id shown above that list
+#      ASC_KEY_P8_B64       the downloaded AuthKey_XXXX.p8, base64-encoded
+name: iOS app
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', 'VERSION', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select newest Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen >/dev/null
+          cd ios && xcodegen generate
+      - name: Read version
+        id: v
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Build for the simulator (compile check)
+        run: |
+          xcodebuild -project ios/MKProd.xcodeproj -scheme MKProd -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            MARKETING_VERSION=${{ steps.v.outputs.version }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO build | tail -20
+          test ${PIPESTATUS[0]} -eq 0
+      - name: Build unsigned .ipa
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/MKProd.xcodeproj -scheme MKProd -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            MARKETING_VERSION=${{ steps.v.outputs.version }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -20
+          mkdir -p dist/Payload
+          cp -R build/Build/Products/Release-iphoneos/MKProd.app dist/Payload/
+          (cd dist && zip -qry "MK-Prod-${{ steps.v.outputs.version }}-ios-unsigned.ipa" Payload && rm -rf Payload)
+          ls -la dist
+      - name: Sign and upload to TestFlight
+        id: tf
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+          KEY_B64: ${{ secrets.ASC_KEY_P8_B64 }}
+        run: |
+          if [ -z "$TEAM" ] || [ -z "$KEY_ID" ] || [ -z "$ISSUER" ] || [ -z "$KEY_B64" ]; then
+            echo "::notice title=TestFlight skipped::Add APPLE_TEAM_ID, ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8_B64 (see IOS.md) to sign the app and send it to TestFlight."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          set -o pipefail
+          KEY="$RUNNER_TEMP/AuthKey_$KEY_ID.p8"; echo "$KEY_B64" | base64 -d > "$KEY"
+          AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$KEY" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
+          xcodebuild -project ios/MKProd.xcodeproj -scheme MKProd -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/MKProd.xcarchive" \
+            MARKETING_VERSION=${{ steps.v.outputs.version }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic "${AUTH[@]}" archive | tail -20
+          cat > "$RUNNER_TEMP/export.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/MKProd.xcarchive" -exportOptionsPlist "$RUNNER_TEMP/export.plist" \
+            -exportPath "$RUNNER_TEMP/export" "${AUTH[@]}" | tail -20
+          echo "uploaded=true" >> "$GITHUB_OUTPUT"
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ios-v${{ steps.v.outputs.version }}
+          name: MK Prod for iPhone and iPad ${{ steps.v.outputs.version }}
+          body: |
+            ${{ steps.tf.outputs.uploaded == 'true' && '**Install:** open the **TestFlight** app on the iPhone or iPad; this version arrives there within minutes of Apple finishing its check.' || '**Install today, no Apple account needed:** open https://mkprod.mohamd-beam.workers.dev in **Safari** → Share → **Add to Home Screen**. Same icon, full screen, every feature.' }}
+
+            **Sideload the app itself:** `MK-Prod-${{ steps.v.outputs.version }}-ios-unsigned.ipa` installs with Sideloadly or AltStore and your Apple ID (see IOS.md). iOS 16 or newer, iPhone and iPad (Split View and Slide Over).
+          files: dist/MK-Prod-*-ios-unsigned.ipa

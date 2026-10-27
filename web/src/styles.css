@@ -173,9 +173,19 @@ table.t td.num, table.t th.num { text-align: right; font-variant-numeric: tabula
 .empty { text-align: center; color: var(--muted); padding: 50px 10px; }
 .empty .big { font-size: 34px; }
 
-@media (max-width: 860px) {
+/* Medium width: unfolded foldables (Honor Magic V, Galaxy Z Fold, Pixel Fold ≈ 700–900 CSS px),
+   small tablets, split-screen. Keep the sidebar visible, just narrower, and tighten the content. */
+@media (min-width: 700px) and (max-width: 1000px) {
+  .app { grid-template-columns: 214px 1fr; }
+  .side-scroll { padding: 8px 6px; }
+  .page { padding: 14px; }
+  .g3, .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .trow .hide-sm { display: none; }
+}
+/* Phones (and the outer screen of a foldable): sidebar becomes a slide-in drawer. */
+@media (max-width: 699px) {
   .app { grid-template-columns: 1fr; }
-  .side { position: fixed; inset: 0 auto 0 0; width: 270px; z-index: 25; transform: translateX(-100%); transition: transform 0.2s; }
+  .side { position: fixed; inset: 0 auto 0 0; width: min(290px, 86vw); z-index: 25; transform: translateX(-100%); transition: transform 0.2s; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
   .side.open { transform: none; }
   .menu-btn { display: inline-flex; }
   .g3, .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -361,3 +371,30 @@ body {
 .wb-grip { position: absolute; left: 0; right: 0; top: 0; height: 12px; cursor: grab; border-radius: 6px 6px 0 0; background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .wb-resize { position: absolute; right: -8px; bottom: -8px; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); cursor: nwse-resize; border: 2px solid #fff; }
 @media (max-width: 720px) { .wb-canvas { max-height: calc(100vh - 220px); } }
+
+/* ---- Folding phones (see fold.ts). --fold-x/-y/-w/-h is the hinge in CSS px. */
+/* Any vertical fold: the task panel fills exactly the right-hand pane instead of straddling the crease. */
+html.fold-v .drawer { left: calc(var(--fold-x) + var(--fold-w)); width: auto; border-radius: 0; }
+/* Book posture (or a dual screen): sidebar = left pane, page = right pane. */
+html.fold-split .app { grid-template-columns: var(--fold-x) var(--fold-w) 1fr; }
+html.fold-split .app > .side { grid-column: 1; position: static; transform: none; width: auto; }
+html.fold-split .app > .main { grid-column: 3; }
+html.fold-split .menu-btn { display: none; }
+html.fold-split .modal { left: calc(var(--fold-x) + var(--fold-w) + (100vw - var(--fold-x) - var(--fold-w)) / 2); width: min(680px, calc(100vw - var(--fold-x) - var(--fold-w) - 24px)); }
+/* Tabletop posture: work above the fold, panels below it, nothing on the crease. */
+html.fold-table .app { height: var(--fold-y); }
+html.fold-table .drawer { top: calc(var(--fold-y) + var(--fold-h)); left: 0; width: auto; border-radius: 18px 18px 0 0; }
+html.fold-table .modal { top: calc(var(--fold-y) / 2); max-height: calc(var(--fold-y) - 24px); }
+html.fold-table body { background: var(--side); }
+
+/* iPhone / iPad: keep content clear of the notch and the home indicator (PWA and app). */
+@supports (padding: env(safe-area-inset-top)) {
+  .topbar { padding-top: max(10px, env(safe-area-inset-top)); }
+  .side-scroll { padding-top: max(10px, env(safe-area-inset-top)); }
+  .side-foot { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .page { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+  .drawer { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+}
+.logo { background: url(/icon.svg) center / cover no-repeat; color: transparent; }
+/* Tabletop: keep the work above the fold readable while a panel is open below it. */
+html.fold-table .scrim { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(10, 12, 20, 0.06); }

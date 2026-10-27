@@ -56,4 +56,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core:1.13.1")
+    // Jetpack WindowManager: hinge position and posture on foldables (book, tabletop, flat).
+    implementation("androidx.window:window:1.3.0")
+    implementation("androidx.window:window-java:1.3.0")
 }

@@ -33,7 +33,14 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
+import androidx.core.util.Consumer;
+import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter;
+import androidx.window.layout.DisplayFeature;
+import androidx.window.layout.FoldingFeature;
+import androidx.window.layout.WindowInfoTracker;
+import androidx.window.layout.WindowLayoutInfo;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -42,8 +49,9 @@ import java.io.OutputStream;
 /**
  * MK Prod for Android: a full-screen WebView around the web app. Every feature comes from the
  * site; this shell adds a launcher icon, proper handling of folding/unfolding and multi-window
- * (see configChanges in the manifest), file uploads for attachments, downloads of encrypted
- * attachments and Excel exports, and opening external links in the browser.
+ * (see configChanges in the manifest), the hinge position and posture for foldables (handed to
+ * the page, which lays itself out around the crease), file uploads for attachments, downloads of
+ * encrypted attachments and Excel exports, and opening external links in the browser.
  */
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 1;
@@ -51,6 +59,8 @@ public class MainActivity extends Activity {
     private String origin;
     private ValueCallback<Uri[]> pendingChooser;
     private LinearLayout offline;
+    private WindowInfoTrackerCallbackAdapter windowTracker;
+    private final Consumer<WindowLayoutInfo> layoutListener = this::onWindowLayout;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -111,6 +121,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 if (url.startsWith(origin)) offline.setVisibility(View.GONE);
+                pushFold();
             }
         });
 
@@ -157,6 +168,10 @@ public class MainActivity extends Activity {
             }
         });
 
+        windowTracker = new WindowInfoTrackerCallbackAdapter(WindowInfoTracker.getOrCreate(this));
+        // The web view moves when insets change (keyboard, rotation): re-measure the hinge then.
+        web.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> { if (l != ol || t != ot || r != or || b != ob) pushFold(); });
+
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(targetUrl(getIntent(), appUrl));
     }
@@ -172,6 +187,44 @@ public class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (intent.getData() != null && intent.getData().toString().startsWith(origin)) web.loadUrl(intent.getData().toString());
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        windowTracker.addWindowLayoutInfoListener(this, ContextCompat.getMainExecutor(this), layoutListener);
+    }
+
+    @Override
+    protected void onStop() {
+        windowTracker.removeWindowLayoutInfoListener(layoutListener);
+        super.onStop();
+    }
+
+    private FoldingFeature lastFold;
+
+    /** Every fold, unfold, posture change or window resize lands here. */
+    private void onWindowLayout(WindowLayoutInfo info) {
+        lastFold = null;
+        for (DisplayFeature f : info.getDisplayFeatures()) if (f instanceof FoldingFeature) lastFold = (FoldingFeature) f;
+        pushFold();
+    }
+
+    /** Tells the page where the hinge is, in CSS pixels relative to the web view (see web/src/fold.ts). */
+    private void pushFold() {
+        String json = "null";
+        if (lastFold != null && web.getWidth() > 0) {
+            int[] loc = new int[2];
+            web.getLocationInWindow(loc);
+            float d = getResources().getDisplayMetrics().density;
+            android.graphics.Rect b = lastFold.getBounds();
+            json = "{\"orientation\":\"" + (lastFold.getOrientation() == FoldingFeature.Orientation.VERTICAL ? "vertical" : "horizontal") + "\"," +
+                "\"state\":\"" + (lastFold.getState() == FoldingFeature.State.HALF_OPENED ? "half" : "flat") + "\"," +
+                "\"separating\":" + lastFold.isSeparating() + "," +
+                "\"x\":" + Math.round((b.left - loc[0]) / d) + ",\"y\":" + Math.round((b.top - loc[1]) / d) + "," +
+                "\"width\":" + Math.round(b.width() / d) + ",\"height\":" + Math.round(b.height() / d) + "}";
+        }
+        web.evaluateJavascript("window.__mkFold=" + json + ";window.mkSetFold&&window.mkSetFold(" + json + ")", null);
     }
 
     @Override

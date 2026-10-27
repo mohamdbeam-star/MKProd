@@ -1,4 +1,7 @@
 # Build output
+ios/*.xcodeproj/
+ios/MKProd/Info.plist
+ios/build/
 .build/
 *.app/
 web/node_modules/

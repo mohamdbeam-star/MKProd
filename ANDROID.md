@@ -70,3 +70,20 @@ Android Studio: open the `android` folder. Command line (JDK 17 + Android SDK):
 ```bash
 cd android && gradle assembleRelease     # unsigned unless KEYSTORE_* env vars are set
 ```
+
+## Folding phones
+
+Built for book-style foldables such as the Honor Magic V series, Galaxy Z Fold and Pixel Fold,
+and for flip phones:
+
+- **Cover screen:** the phone layout (menu button, slide-in sidebar).
+- **Unfolded:** the sidebar stays on screen next to the page; the task panel fills exactly the
+  right-hand half, so nothing sits on the crease.
+- **Book posture** (half open, like a book): sidebar and navigation in the left half, the page in
+  the right half.
+- **Tabletop posture** (half open, lying flat): the page above the fold, the task panel below it.
+- Folding, unfolding, rotating or going split-screen never reloads the app or loses what you
+  are typing.
+
+The app reads the hinge from Android (Jetpack WindowManager) and passes it to the page; the same
+layouts work in Chrome on a foldable through the browser's Viewport Segments API.

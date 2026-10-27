@@ -27,7 +27,8 @@ cp "$BIN" "$APP/Contents/MacOS/MKProd"
 
 ICONSET=$(mktemp -d)/AppIcon.iconset
 mkdir -p "$ICONSET"
-swift scripts/make_icon.swift "$ICONSET/icon_512x512@2x.png"
+# Rendered from scripts/icon/icon.mjs (node scripts/icon/render.mjs); committed so builds need no browser.
+cp scripts/icon/mac-1024.png "$ICONSET/icon_512x512@2x.png"
 for s in 16 32 128 256 512; do
   sips -z $s $s "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
   sips -z $((s*2)) $((s*2)) "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
